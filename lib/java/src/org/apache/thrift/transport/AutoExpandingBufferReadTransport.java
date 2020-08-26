@@ -28,8 +28,8 @@ public class AutoExpandingBufferReadTransport extends TTransport {
   private int pos = 0;
   private int limit = 0;
 
-  public AutoExpandingBufferReadTransport(int initialCapacity, double overgrowthCoefficient) {
-    this.buf = new AutoExpandingBuffer(initialCapacity, overgrowthCoefficient);
+  public AutoExpandingBufferReadTransport(int initialCapacity) {
+    this.buf = new AutoExpandingBuffer(initialCapacity);
   }
 
   public void fill(TTransport inTrans, int length) throws TTransportException {
@@ -51,8 +51,10 @@ public class AutoExpandingBufferReadTransport extends TTransport {
   @Override
   public final int read(byte[] target, int off, int len) throws TTransportException {
     int amtToRead = Math.min(len, getBytesRemainingInBuffer());
-    System.arraycopy(buf.array(), pos, target, off, amtToRead);
-    consumeBuffer(amtToRead);
+    if(amtToRead > 0){
+      System.arraycopy(buf.array(), pos, target, off, amtToRead);
+      consumeBuffer(amtToRead);
+    }
     return amtToRead;
   }
 
@@ -81,4 +83,3 @@ public class AutoExpandingBufferReadTransport extends TTransport {
     return limit - pos;
   }
 }
-  

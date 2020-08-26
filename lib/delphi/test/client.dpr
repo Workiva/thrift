@@ -24,19 +24,27 @@ program client;
 
 uses
   SysUtils,
+  DataFactory in 'Performance\DataFactory.pas',
+  PerfTests in 'Performance\PerfTests.pas',
   TestClient in 'TestClient.pas',
   Thrift.Test, // in 'gen-delphi\Thrift.Test.pas',
   Thrift in '..\src\Thrift.pas',
   Thrift.Transport in '..\src\Thrift.Transport.pas',
+  Thrift.Socket in '..\src\Thrift.Socket.pas',
+  Thrift.Configuration in '..\src\Thrift.Configuration.pas',
+  Thrift.Exception in '..\src\Thrift.Exception.pas',
   Thrift.Transport.Pipes in '..\src\Thrift.Transport.Pipes.pas',
+  Thrift.Transport.WinHTTP in '..\src\Thrift.Transport.WinHTTP.pas',
+  Thrift.Transport.MsxmlHTTP in '..\src\Thrift.Transport.MsxmlHTTP.pas',
   Thrift.Protocol in '..\src\Thrift.Protocol.pas',
   Thrift.Protocol.JSON in '..\src\Thrift.Protocol.JSON.pas',
   Thrift.Protocol.Compact in '..\src\Thrift.Protocol.Compact.pas',
+  Thrift.Protocol.Multiplex in '..\src\Thrift.Protocol.Multiplex.pas',
   Thrift.Collections in '..\src\Thrift.Collections.pas',
   Thrift.Server in '..\src\Thrift.Server.pas',
   Thrift.Stream in '..\src\Thrift.Stream.pas',
-  Thrift.Console in '..\src\Thrift.Console.pas',
   Thrift.TypeRegistry in '..\src\Thrift.TypeRegistry.pas',
+  Thrift.WinHTTP in '..\src\Thrift.WinHTTP.pas',
   Thrift.Utils in '..\src\Thrift.Utils.pas';
 
 var
@@ -44,19 +52,19 @@ var
   args : array of string;
   i : Integer;
   arg : string;
-  s : string;
 
 begin
   try
     Writeln( 'Delphi TestClient '+Thrift.Version);
     nParamCount := ParamCount;
     SetLength( args, nParamCount);
-    for i := 1 to nParamCount do
-    begin
+    for i := 1 to nParamCount do begin
       arg := ParamStr( i );
       args[i-1] := arg;
     end;
+
     ExitCode := TTestClient.Execute( args);
+
   except
     on E: EAbort do begin
       ExitCode := $FF;

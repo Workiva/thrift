@@ -21,8 +21,6 @@ AUTOMAKE_OPTIONS = serial-tests
 
 # Thrift compiler rules
 
-THRIFT = $(top_builddir)/compiler/cpp/thrift
-
 debug_proto_gen = $(addprefix gen-d/, DebugProtoTest_types.d)
 
 $(debug_proto_gen): $(top_srcdir)/test/DebugProtoTest.thrift
@@ -71,7 +69,7 @@ endif
 
 if WITH_D_SSL_TESTS
 d_test_flags += $(DMD_OPENSSL_FLAGS) ../$(D_SSL_LIB_NAME)
-targets = trusted-ca-certificate.pem server-certificate.pem $(targets_)
+targets = $(targets_)
 ran_tests = $(ran_tests_)
 else
 targets = $(filter-out $(openssl_dependent_targets), $(targets_))
@@ -98,17 +96,6 @@ thrift_test_server: %: %.d thrift_test_common.d test_utils.d $(thrift_test_gen)
 	$(DMD) $(d_test_flags) -of$@ $^
 
 
-# Certificate generation targets (for the SSL tests).
-# Currently, we just assume that the "openssl" tool is on the path, could be
-# replaced by a more elaborate mechanism.
-
-server-certificate.pem: openssl.test.cnf
-	openssl req -new -x509 -nodes -config openssl.test.cnf \
-		-out server-certificate.pem
-
-trusted-ca-certificate.pem: server-certificate.pem
-	cat server-certificate.pem > $@
-
 check-local: $(targets)
 
 clean-local:
@@ -117,8 +104,9 @@ clean-local:
 
 # Tests ran as part of make check.
 
-async_test_runner.sh: async_test trusted-ca-certificate.pem server-certificate.pem
-thrift_test_runner.sh: thrift_test_client thrift_test_server \
-	trusted-ca-certificate.pem server-certificate.pem
+async_test_runner.sh: async_test
+thrift_test_runner.sh: thrift_test_client thrift_test_server
 
 TESTS = $(ran_tests)
+
+precross: $(targets)

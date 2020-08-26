@@ -4,7 +4,7 @@
     <ClCompile Include="src\thrift\transport\TBufferTransports.cpp">
       <Filter>transport</Filter>
     </ClCompile>
-    <ClCompile Include="src\thrift\Thrift.cpp" />
+    <ClCompile Include="src\thrift\TOutput.cpp" />
     <ClCompile Include="src\thrift\TApplicationException.cpp" />
     <ClCompile Include="src\thrift\windows\StdAfx.cpp">
       <Filter>windows</Filter>
@@ -72,6 +72,9 @@
     <ClCompile Include="src\thrift\async\TAsyncChannel.cpp">
       <Filter>async</Filter>
     </ClCompile>
+    <ClCompile Include="src\thrift\async\TConcurrentClientSyncInfo.cpp">
+      <Filter>async</Filter>
+    </ClCompile>
     <ClCompile Include="src\thrift\processor\PeekProcessor.cpp">
       <Filter>processor</Filter>
     </ClCompile>
@@ -91,12 +94,6 @@
       <Filter>concurrency</Filter>
     </ClCompile>
     <ClCompile Include="src\thrift\concurrency\BoostMutex.cpp">
-      <Filter>concurrency</Filter>
-    </ClCompile>
-    <ClCompile Include="src\thrift\concurrency\BoostThreadFactory.cpp">
-      <Filter>concurrency</Filter>
-    </ClCompile>
-    <ClCompile Include="src\thrift\concurrency\StdThreadFactory.cpp">
       <Filter>concurrency</Filter>
     </ClCompile>
     <ClCompile Include="src\thrift\windows\WinFcntl.cpp">
@@ -170,6 +167,9 @@
     <ClInclude Include="src\thrift\async\TAsyncChannel.h">
       <Filter>async</Filter>
     </ClInclude>
+    <ClInclude Include="src\thrift\async\TConcurrentClientSyncInfo.h">
+      <Filter>async</Filter>
+    </ClInclude>
     <ClInclude Include="src\thrift\processor\PeekProcessor.h">
       <Filter>processor</Filter>
     </ClInclude>
@@ -220,15 +220,6 @@
     </ClInclude>
     <ClInclude Include="src\thrift\windows\force_inc.h">
       <Filter>windows</Filter>
-    </ClInclude>
-    <ClInclude Include="src\thrift\concurrency\BoostThreadFactory.h">
-      <Filter>concurrency</Filter>
-    </ClInclude>
-    <ClInclude Include="src\thrift\concurrency\StdThreadFactory.h">
-      <Filter>concurrency</Filter>
-    </ClInclude>
-    <ClInclude Include="src\thrift\concurrency\PlatformThreadFactory.h">
-      <Filter>concurrency</Filter>
     </ClInclude>
     <ClInclude Include="src\thrift\windows\WinFcntl.h">
       <Filter>windows</Filter>

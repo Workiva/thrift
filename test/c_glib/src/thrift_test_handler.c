@@ -30,7 +30,7 @@
 
 G_DEFINE_TYPE (ThriftTestHandler,
                thrift_test_handler,
-               T_TEST_TYPE_THRIFT_TEST_HANDLER);
+               T_TEST_TYPE_THRIFT_TEST_HANDLER)
 
 gboolean
 thrift_test_handler_test_void (TTestThriftTestIf  *iface,
@@ -68,7 +68,7 @@ thrift_test_handler_test_bool (TTestThriftTestIf  *iface,
   THRIFT_UNUSED_VAR (iface);
   THRIFT_UNUSED_VAR (error);
 
-  printf ("testByte(%s)\n", thing ? "true" : "false");
+  printf ("testBool(%s)\n", thing ? "true" : "false");
   *_return = thing;
 
   return TRUE;
@@ -144,7 +144,8 @@ thrift_test_handler_test_binary (TTestThriftTestIf *iface,
   THRIFT_UNUSED_VAR (error);
 
   printf ("testBinary()\n");  // TODO: hex output
-  g_byte_array_append( *_return, thing->data, thing->len);
+  g_byte_array_ref((GByteArray *)thing);
+  *_return = (GByteArray *)thing;
 
   return TRUE;
 }
@@ -366,7 +367,7 @@ thrift_test_handler_test_list (TTestThriftTestIf  *iface,
   printf ("testList({");
   for (i = 0; i < thing->len; i += 1) {
     gint32 value;
-    gint32 *new_value;
+    gint32 new_value;
 
     if (first)
       first = FALSE;
@@ -376,9 +377,8 @@ thrift_test_handler_test_list (TTestThriftTestIf  *iface,
     value = g_array_index (thing, gint32, i);
     printf ("%d", value);
 
-    new_value = g_malloc (sizeof *new_value);
-    *new_value = value;
-    g_array_append_val (*_return, *new_value);
+    new_value = value;
+    g_array_append_val (*_return, new_value);
   }
   printf ("})\n");
 
@@ -514,17 +514,21 @@ thrift_test_handler_test_insanity (TTestThriftTestIf    *iface,
 
   g_hash_table_insert (first_map,
                        GINT_TO_POINTER (T_TEST_NUMBERZ_TWO),
-                       argument);
+                       (gpointer)argument);
   g_hash_table_insert (first_map,
                        GINT_TO_POINTER (T_TEST_NUMBERZ_THREE),
-                       argument);
+                       (gpointer)argument);
 
-  /* Increment argument's ref count since first_map now holds two
-     references to it and would otherwise attempt to deallocate it
-     twice during destruction. We do this instead of creating a copy
-     of argument in order to mimic the C++ implementation (and since,
-     frankly, the world needs less argument, not more). */
-  g_object_ref (argument);
+  /* Increment argument's ref count by two because first_map now holds
+     two references to it and the caller is not aware we have made any
+     additional references to argument.  (That is, caller owns argument
+     and will unref it explicitly in addition to unref-ing *_return.)
+
+     We do this instead of creating a copy of argument in order to mimic
+     the C++ implementation (and since, frankly, the world needs less
+     argument, not more). */
+  g_object_ref ((gpointer)argument);
+  g_object_ref ((gpointer)argument);
 
   looney = g_object_new (T_TEST_TYPE_INSANITY, NULL);
   g_hash_table_insert (second_map,
@@ -586,6 +590,9 @@ thrift_test_handler_test_insanity (TTestThriftTestIf    *iface,
                 byte_thing,
                 i32_thing,
                 i64_thing);
+        if (string_thing != NULL) {
+          g_free (string_thing);
+        }
       }
       printf ("}");
       g_ptr_array_unref (xtructs);
@@ -619,10 +626,10 @@ thrift_test_handler_test_multi (TTestThriftTestIf   *iface,
   printf ("testMulti()\n");
 
   g_object_set (*_return,
-                "string_thing", g_strdup ("Hello2"),
-                "byte_thing",   arg0,
-                "i32_thing",    arg1,
-                "i64_thing",    arg2,
+                "string_thing", "Hello2",
+                "byte_thing",    arg0,
+                "i32_thing",     arg1,
+                "i64_thing",     arg2,
                 NULL);
 
   return TRUE;
@@ -649,7 +656,7 @@ thrift_test_handler_test_exception (TTestThriftTestIf  *iface,
        argument, set *error to NULL and return FALSE */
     *err1 = g_object_new (T_TEST_TYPE_XCEPTION,
                           "errorCode", 1001,
-                          "message",   g_strdup (arg),
+                          "message",   arg,
                           NULL);
     *error = NULL;
     result = FALSE;
@@ -671,7 +678,7 @@ thrift_test_handler_test_exception (TTestThriftTestIf  *iface,
     /* This code is duplicated from the C++ test suite, though it
        appears to serve no purpose */
     xtruct = g_object_new (T_TEST_TYPE_XTRUCT,
-                           "string_thing", g_strdup (arg),
+                           "string_thing", arg,
                            NULL);
     g_object_unref (xtruct);
 
@@ -701,22 +708,23 @@ thrift_test_handler_test_multi_exception (TTestThriftTestIf  *iface,
   g_assert (*err1 == NULL);
   g_assert (*err2 == NULL);
 
-  if (strncmp (arg0, "Xception", 9) == 0) {
+  if (strncmp (arg0, "Xception", 8) == 0 && strlen(arg0) == 8) {
     *err1 = g_object_new (T_TEST_TYPE_XCEPTION,
                           "errorCode", 1001,
-                          "message",   g_strdup ("This is an Xception"),
+                          "message",  "This is an Xception",
                           NULL);
     result = FALSE;
   }
-  else if (strncmp (arg0, "Xception2", 10) == 0) {
+  else if (strncmp (arg0, "Xception2", 9) == 0) {
     *err2 = g_object_new (T_TEST_TYPE_XCEPTION2,
-                          "errorCode", 2002);
+                          "errorCode", 2002,
+                          NULL);
 
     g_object_get (*err2,
                   "struct_thing", &struct_thing,
                   NULL);
     g_object_set (struct_thing,
-                  "string_thing", g_strdup ("This is an Xception2"),
+                  "string_thing", "This is an Xception2",
                   NULL);
     g_object_set (*err2,
                   "struct_thing", struct_thing,
@@ -727,7 +735,7 @@ thrift_test_handler_test_multi_exception (TTestThriftTestIf  *iface,
   }
   else {
     g_object_set (*_return,
-                  "string_thing", g_strdup (arg1),
+                  "string_thing", arg1,
                   NULL);
     result = TRUE;
   }
@@ -783,6 +791,9 @@ thrift_test_handler_class_init (ThriftTestHandlerClass *klass)
   base_class->test_double =
     klass->test_double =
     thrift_test_handler_test_double;
+  base_class->test_binary =
+    klass->test_binary =
+    thrift_test_handler_test_binary;
   base_class->test_struct =
     klass->test_struct =
     thrift_test_handler_test_struct;

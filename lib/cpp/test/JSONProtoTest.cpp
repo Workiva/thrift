@@ -19,18 +19,22 @@
 
 #define _USE_MATH_DEFINES
 #include <cmath>
-#include <thrift/transport/TBufferTransports.h>
+#include <iomanip>
+#include <sstream>
 #include <thrift/protocol/TJSONProtocol.h>
+#include <memory>
+#include <thrift/transport/TBufferTransports.h>
 #include "gen-cpp/DebugProtoTest_types.h"
 
 #define BOOST_TEST_MODULE JSONProtoTest
 #include <boost/test/unit_test.hpp>
 
 using namespace thrift::test::debug;
+using namespace apache::thrift;
 using apache::thrift::transport::TMemoryBuffer;
 using apache::thrift::protocol::TJSONProtocol;
 
-static std::auto_ptr<OneOfEach> ooe;
+static std::shared_ptr<OneOfEach> ooe;
 
 void testCaseSetup_1() {
   ooe.reset(new OneOfEach);
@@ -52,7 +56,7 @@ BOOST_AUTO_TEST_CASE(test_json_proto_1) {
   const std::string expected_result(
   "{\"1\":{\"tf\":1},\"2\":{\"tf\":0},\"3\":{\"i8\":127},\"4\":{\"i16\":27000},"
   "\"5\":{\"i32\":16777216},\"6\":{\"i64\":6000000000},\"7\":{\"dbl\":3.1415926"
-  "53589793},\"8\":{\"str\":\"JSON THIS! \\\"\\u0001\"},\"9\":{\"str\":\"\xd7\\"
+  "535897931},\"8\":{\"str\":\"JSON THIS! \\\"\\u0001\"},\"9\":{\"str\":\"\xd7\\"
   "n\\u0007\\t\"},\"10\":{\"tf\":0},\"11\":{\"str\":\"AQIDrQ\"},\"12\":{\"lst\""
   ":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16\",3,1,2,3]},\"14\":{\"lst\":[\"i64"
   "\",3,1,2,3]}}");
@@ -63,7 +67,7 @@ BOOST_AUTO_TEST_CASE(test_json_proto_1) {
     "Expected:\n" << expected_result << "\nGotten:\n" << result);
 }
 
-static std::auto_ptr<Nesting> n;
+static std::shared_ptr<Nesting> n;
 
 void testCaseSetup_2() {
   testCaseSetup_1();
@@ -91,7 +95,7 @@ BOOST_AUTO_TEST_CASE(test_json_proto_2) {
     "{\"1\":{\"rec\":{\"1\":{\"i32\":31337},\"2\":{\"str\":\"I am a bonk... xor"
     "!\"}}},\"2\":{\"rec\":{\"1\":{\"tf\":1},\"2\":{\"tf\":0},\"3\":{\"i8\":127"
     "},\"4\":{\"i16\":16},\"5\":{\"i32\":32},\"6\":{\"i64\":64},\"7\":{\"dbl\":"
-    "1.618033988749895},\"8\":{\"str\":\":R (me going \\\"rrrr\\\")\"},\"9\":{"
+    "1.6180339887498949},\"8\":{\"str\":\":R (me going \\\"rrrr\\\")\"},\"9\":{"
     "\"str\":\"ӀⅮΝ Нοⅿоɡгаρℎ Αttαⅽκǃ‼\"},\"10\":{\"tf\":0},\"11\":{\"str\":\""
     "AQIDrQ\"},\"12\":{\"lst\":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16\",3,1,2"
     ",3]},\"14\":{\"lst\":[\"i64\",3,1,2,3]}}}}"
@@ -103,7 +107,7 @@ BOOST_AUTO_TEST_CASE(test_json_proto_2) {
     "Expected:\n" << expected_result << "\nGotten:\n" << result);
 }
 
-static std::auto_ptr<HolyMoley> hm;
+static std::shared_ptr<HolyMoley> hm;
 
 void testCaseSetup_3() {
   testCaseSetup_2();
@@ -155,12 +159,12 @@ BOOST_AUTO_TEST_CASE(test_json_proto_3) {
   const std::string expected_result(
   "{\"1\":{\"lst\":[\"rec\",2,{\"1\":{\"tf\":1},\"2\":{\"tf\":0},\"3\":{\"i8\":"
   "34},\"4\":{\"i16\":27000},\"5\":{\"i32\":16777216},\"6\":{\"i64\":6000000000"
-  "},\"7\":{\"dbl\":3.141592653589793},\"8\":{\"str\":\"JSON THIS! \\\"\\u0001"
+  "},\"7\":{\"dbl\":3.1415926535897931},\"8\":{\"str\":\"JSON THIS! \\\"\\u0001"
   "\"},\"9\":{\"str\":\"\xd7\\n\\u0007\\t\"},\"10\":{\"tf\":0},\"11\":{\"str\":"
   "\"AQIDrQ\"},\"12\":{\"lst\":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16\",3,1,2"
   ",3]},\"14\":{\"lst\":[\"i64\",3,1,2,3]}},{\"1\":{\"tf\":1},\"2\":{\"tf\":0},"
   "\"3\":{\"i8\":51},\"4\":{\"i16\":16},\"5\":{\"i32\":32},\"6\":{\"i64\":64},"
-  "\"7\":{\"dbl\":1.618033988749895},\"8\":{\"str\":\":R (me going \\\"rrrr\\\""
+  "\"7\":{\"dbl\":1.6180339887498949},\"8\":{\"str\":\":R (me going \\\"rrrr\\\""
   ")\"},\"9\":{\"str\":\"ӀⅮΝ Нοⅿоɡгаρℎ Αttαⅽκǃ‼\"},\"10\":{\"tf\":0},\"11\":{"
   "\"str\":\"AQIDrQ\"},\"12\":{\"lst\":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16"
   "\",3,1,2,3]},\"14\":{\"lst\":[\"i64\",3,1,2,3]}}]},\"2\":{\"set\":[\"lst\",3"
@@ -181,8 +185,8 @@ BOOST_AUTO_TEST_CASE(test_json_proto_3) {
 BOOST_AUTO_TEST_CASE(test_json_proto_4) {
   testCaseSetup_1();
 
-  boost::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer());
-  boost::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer());
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
 
   ooe->write(proto.get());
   OneOfEach ooe2;
@@ -194,8 +198,8 @@ BOOST_AUTO_TEST_CASE(test_json_proto_4) {
 BOOST_AUTO_TEST_CASE(test_json_proto_5) {
   testCaseSetup_3();
 
-  boost::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer());
-  boost::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer());
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
 
   hm->write(proto.get());
   HolyMoley hm2;
@@ -221,19 +225,28 @@ BOOST_AUTO_TEST_CASE(test_json_proto_6) {
 
   const std::string expected_result(
   "{\"1\":{\"dbl\":\"NaN\"},\"2\":{\"dbl\":\"Infinity\"},\"3\":{\"dbl\":\"-Infi"
-  "nity\"},\"4\":{\"dbl\":3.333333333333333},\"5\":{\"dbl\":9.999999999999999e+"
+  "nity\"},\"4\":{\"dbl\":3.3333333333333335},\"5\":{\"dbl\":9.9999999999999994e+"
   "304},\"6\":{\"dbl\":1e-305},\"7\":{\"dbl\":0},\"8\":{\"dbl\":-0}}"
   );
 
-  const std::string result(apache::thrift::ThriftJSONString(dub));
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer());
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer)); 
+  dub.write(proto.get());
+  Doubles dub_1;
+  dub_1.read(proto.get());
 
+  const std::string result(apache::thrift::ThriftJSONString(dub));
+  const std::string result_1(apache::thrift::ThriftJSONString(dub_1));
+  
   BOOST_CHECK_MESSAGE(!expected_result.compare(result),
     "Expected:\n" << expected_result << "\nGotten:\n" << result);
+  BOOST_CHECK_MESSAGE(!expected_result.compare(result_1),
+    "Expected:\n" << expected_result << "\nGotten:\n" << result_1);
 }
 
 BOOST_AUTO_TEST_CASE(test_json_proto_7) {
-  boost::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer());
-  boost::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer());
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
 
   Base64 base;
   base.a = 123;
@@ -255,17 +268,85 @@ BOOST_AUTO_TEST_CASE(test_json_proto_8) {
   const char* json_string =
   "{\"1\":{\"tf\":1},\"2\":{\"tf\":0},\"3\":{\"i8\":127},\"4\":{\"i16\":27000},"
   "\"5\":{\"i32\":16.77216},\"6\":{\"i64\":6000000000},\"7\":{\"dbl\":3.1415926"
-  "53589793},\"8\":{\"str\":\"JSON THIS! \\\"\\u0001\"},\"9\":{\"str\":\"\xd7\\"
+  "535897931},\"8\":{\"str\":\"JSON THIS! \\\"\\u0001\"},\"9\":{\"str\":\"\xd7\\"
   "n\\u0007\\t\"},\"10\":{\"tf\":0},\"11\":{\"str\":\"AQIDrQ\"},\"12\":{\"lst\""
   ":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16\",3,1,2,3]},\"14\":{\"lst\":[\"i64"
   "\",3,1,2,3]}}";
 
-  boost::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer(
-    (uint8_t*)(json_string), strlen(json_string)*sizeof(char)));
-  boost::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
+  const std::size_t bufSiz = strlen(json_string) * sizeof(char);
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer(
+    (uint8_t*)(json_string), static_cast<uint32_t>(bufSiz)));
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
 
   OneOfEach ooe2;
 
+  BOOST_CHECK_THROW(ooe2.read(proto.get()),
+    apache::thrift::protocol::TProtocolException);
+}
+
+static std::string toHexSequence(const std::string& str) {
+  std::stringstream ss;
+  ss << std::hex << std::setfill('0');
+  for (std::size_t i = 0; i < str.size(); i++) {
+    ss << "\\x" << int(uint8_t(str[i]));
+  }
+  return ss.str();
+}
+
+BOOST_AUTO_TEST_CASE(test_json_unicode_escaped) {
+  const char json_string[] =
+  "{\"1\":{\"tf\":1},\"2\":{\"tf\":0},\"3\":{\"i8\":127},\"4\":{\"i16\":27000},"
+  "\"5\":{\"i32\":16},\"6\":{\"i64\":6000000000},\"7\":{\"dbl\":3.1415926"
+  "535897931},\"8\":{\"str\":\"JSON THIS!\"},\"9\":{\"str\":\"\\u0e01 \\ud835\\udd3e\"},"
+  "\"10\":{\"tf\":0},\"11\":{\"str\":\"000000\"},\"12\":{\"lst\""
+  ":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16\",3,1,2,3]},\"14\":{\"lst\":[\"i64"
+  "\",3,1,2,3]}}";
+  const char* expected_zomg_unicode = "\xe0\xb8\x81 \xf0\x9d\x94\xbe";
+
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer(
+    (uint8_t*)(json_string), sizeof(json_string)));
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
+
+  OneOfEach ooe2;
+  ooe2.read(proto.get());
+  BOOST_CHECK_MESSAGE(!ooe2.zomg_unicode.compare(expected_zomg_unicode),
+    "Expected:\n" << toHexSequence(expected_zomg_unicode) << "\nGotten:\n"
+                  << toHexSequence(ooe2.zomg_unicode));
+
+}
+
+BOOST_AUTO_TEST_CASE(test_json_unicode_escaped_missing_low_surrogate) {
+  const char json_string[] =
+  "{\"1\":{\"tf\":1},\"2\":{\"tf\":0},\"3\":{\"i8\":127},\"4\":{\"i16\":27000},"
+  "\"5\":{\"i32\":16},\"6\":{\"i64\":6000000000},\"7\":{\"dbl\":3.1415926"
+  "535897931},\"8\":{\"str\":\"JSON THIS!\"},\"9\":{\"str\":\"\\ud835\"},"
+  "\"10\":{\"tf\":0},\"11\":{\"str\":\"000000\"},\"12\":{\"lst\""
+  ":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16\",3,1,2,3]},\"14\":{\"lst\":[\"i64"
+  "\",3,1,2,3]}}";
+
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer(
+    (uint8_t*)(json_string), sizeof(json_string)));
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
+
+  OneOfEach ooe2;
+  BOOST_CHECK_THROW(ooe2.read(proto.get()),
+    apache::thrift::protocol::TProtocolException);
+}
+
+BOOST_AUTO_TEST_CASE(test_json_unicode_escaped_missing_hi_surrogate) {
+  const char json_string[] =
+  "{\"1\":{\"tf\":1},\"2\":{\"tf\":0},\"3\":{\"i8\":127},\"4\":{\"i16\":27000},"
+  "\"5\":{\"i32\":16},\"6\":{\"i64\":6000000000},\"7\":{\"dbl\":3.1415926"
+  "535897931},\"8\":{\"str\":\"JSON THIS!\"},\"9\":{\"str\":\"\\udd3e\"},"
+  "\"10\":{\"tf\":0},\"11\":{\"str\":\"000000\"},\"12\":{\"lst\""
+  ":[\"i8\",3,1,2,3]},\"13\":{\"lst\":[\"i16\",3,1,2,3]},\"14\":{\"lst\":[\"i64"
+  "\",3,1,2,3]}}";
+
+  std::shared_ptr<TMemoryBuffer> buffer(new TMemoryBuffer(
+    (uint8_t*)(json_string), sizeof(json_string)));
+  std::shared_ptr<TJSONProtocol> proto(new TJSONProtocol(buffer));
+
+  OneOfEach ooe2;
   BOOST_CHECK_THROW(ooe2.read(proto.get()),
     apache::thrift::protocol::TProtocolException);
 }

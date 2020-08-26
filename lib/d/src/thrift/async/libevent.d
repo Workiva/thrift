@@ -62,7 +62,7 @@ class TLibeventAsyncManager : TAsyncSocketManager {
     controlReceiveSocket_.blocking = false;
 
     // Register an event for receiving control messages.
-    controlReceiveEvent_ = event_new(eventBase_, controlReceiveSocket_.handle,
+    controlReceiveEvent_ = event_new(eventBase_, cast(evutil_socket_t)controlReceiveSocket_.handle,
       EV_READ | EV_PERSIST | EV_ET, assumeNothrow(&controlMsgReceiveCallback),
       cast(void*)this);
     event_add(controlReceiveEvent_, null);
@@ -188,7 +188,7 @@ private:
   void addOneshotListenerImpl(Socket socket, TAsyncEventType eventType,
      const(timeval)* timeout, TSocketEventListener listener
   ) {
-    registerOneshotEvent(socket.handle, libeventEventType(eventType),
+    registerOneshotEvent(cast(evutil_socket_t)socket.handle, libeventEventType(eventType),
       assumeNothrow(&socketCallback), timeout, listener);
   }
 
@@ -392,7 +392,7 @@ private:
       TAsyncEventReason.NORMAL;
     (*(cast(TSocketEventListener*)arg))(reason);
     GC.removeRange(arg);
-    clear(arg);
+    destroy(arg);
     free(arg);
   }
 
@@ -402,7 +402,7 @@ private:
     assert(flags & EV_TIMEOUT);
     (*(cast(void delegate()*)arg))();
     GC.removeRange(arg);
-    clear(arg);
+    destroy(arg);
     free(arg);
   }
 
@@ -442,8 +442,8 @@ private:
 
 private {
   timeval toTimeval(const(Duration) dur) {
-    timeval tv = {tv_sec: cast(int)dur.total!"seconds"(),
-      tv_usec: dur.fracSec.usecs};
+    timeval tv;
+    dur.split!("seconds", "usecs")(tv.tv_sec, tv.tv_usec);
     return tv;
   }
 

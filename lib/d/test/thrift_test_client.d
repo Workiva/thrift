@@ -25,6 +25,7 @@ import std.getopt;
 import std.stdio;
 import std.string;
 import std.traits;
+import thrift.base;
 import thrift.codegen.client;
 import thrift.protocol.base;
 import thrift.protocol.binary;
@@ -34,6 +35,7 @@ import thrift.transport.base;
 import thrift.transport.buffered;
 import thrift.transport.framed;
 import thrift.transport.http;
+import thrift.transport.zlib;
 import thrift.transport.socket;
 import thrift.transport.ssl;
 import thrift.util.hashset;
@@ -46,6 +48,7 @@ enum TransportType {
   buffered,
   framed,
   http,
+  zlib,
   raw
 }
 
@@ -67,6 +70,7 @@ void main(string[] args) {
   bool ssl;
   ProtocolType protocolType;
   TransportType transportType;
+  bool zlib;
   bool trace;
 
   getopt(args,
@@ -74,7 +78,9 @@ void main(string[] args) {
     "protocol", &protocolType,
     "ssl", &ssl,
     "transport", &transportType,
+    "zlib", &zlib,
     "trace", &trace,
+    "port", &port,
     "host", (string _, string value) {
       auto parts = split(value, ":");
       if (parts.length > 1) {
@@ -87,34 +93,41 @@ void main(string[] args) {
       }
     }
   );
+  port = to!ushort(port);
 
   TSocket socket;
   if (ssl) {
     auto sslContext = new TSSLContext();
     sslContext.ciphers = "ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH";
     sslContext.authenticate = true;
-    sslContext.loadTrustedCertificates("./trusted-ca-certificate.pem");
+    sslContext.loadTrustedCertificates("../../../test/keys/CA.pem");
     socket = new TSSLSocket(sslContext, host, port);
   } else {
     socket = new TSocket(host, port);
   }
 
-  TProtocol protocol;
+  TTransport transport;
   final switch (transportType) {
     case TransportType.buffered:
-      protocol = createProtocol(new TBufferedTransport(socket), protocolType);
+      transport = new TBufferedTransport(socket);
       break;
     case TransportType.framed:
-      protocol = createProtocol(new TFramedTransport(socket), protocolType);
+      transport = new TFramedTransport(socket);
       break;
     case TransportType.http:
-      protocol = createProtocol(
-        new TClientHttpTransport(socket, host, "/service"), protocolType);
+      transport = new TClientHttpTransport(socket, host, "/service");
+      break;
+    case TransportType.zlib:
+      transport = new TZlibTransport(socket);
       break;
     case TransportType.raw:
-      protocol = createProtocol(socket, protocolType);
+      transport = socket;
       break;
   }
+  if (zlib && transportType != TransportType.zlib) {
+    transport = new TZlibTransport(socket);
+  }
+  TProtocol protocol = createProtocol(transport, protocolType);
 
   auto client = tClient!ThriftTest(protocol);
 
@@ -277,6 +290,15 @@ void main(string[] args) {
         throw new Exception("testException failed.");
       } catch (Xception e) {
         if (trace) writefln("  {%s, \"%s\"}", e.errorCode, e.message);
+      }
+
+      try {
+        if (trace) write("client.testException(\"TException\") =>");
+        client.testException("Xception");
+        if (trace) writeln("  void\nFAILURE");
+        throw new Exception("testException failed.");
+      } catch (TException e) {
+        if (trace) writefln("  {%s}", e.msg);
       }
 
       try {

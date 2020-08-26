@@ -16,10 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  *)
-
- {$SCOPEDENUMS ON}
-
 unit Thrift.Transport;
+
+{$I Thrift.Defines.inc}
+{$SCOPEDENUMS ON}
 
 interface
 
@@ -27,44 +27,115 @@ uses
   Classes,
   SysUtils,
   Math,
-  Sockets, WinSock,
   Generics.Collections,
+  {$IFDEF OLD_UNIT_NAMES}
+    WinSock, Sockets,
+  {$ELSE}
+    Winapi.WinSock,
+    {$IFDEF OLD_SOCKETS}
+      Web.Win.Sockets,
+    {$ELSE}
+      Thrift.Socket,
+    {$ENDIF}
+  {$ENDIF}
+  Thrift.Configuration,
   Thrift.Collections,
+  Thrift.Exception,
   Thrift.Utils,
-  Thrift.Stream,
-  ActiveX,
-  msxml;
+  Thrift.WinHTTP,
+  Thrift.Stream;
+
+const
+  DEFAULT_MAX_MESSAGE_SIZE = 100 * 1024 * 1024; // 100 MB
+  DEFAULT_THRIFT_TIMEOUT = 5 * 1000; // ms
 
 type
+  IStreamTransport = interface;
+
   ITransport = interface
-    ['{A4A9FC37-D620-44DC-AD21-662D16364CE4}']
+    ['{52F81383-F880-492F-8AA7-A66B85B93D6B}']
     function GetIsOpen: Boolean;
     property IsOpen: Boolean read GetIsOpen;
     function Peek: Boolean;
     procedure Open;
     procedure Close;
-    function Read(var buf: TBytes; off: Integer; len: Integer): Integer;
-    function ReadAll(var buf: TBytes; off: Integer; len: Integer): Integer;
+
+    function Read(var buf: TBytes; off: Integer; len: Integer): Integer; overload;
+    function Read(const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer; overload;
+    function ReadAll(var buf: TBytes; off: Integer; len: Integer): Integer; overload;
+    function ReadAll(const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer; overload;
     procedure Write( const buf: TBytes); overload;
     procedure Write( const buf: TBytes; off: Integer; len: Integer); overload;
+    procedure Write( const pBuf : Pointer; off, len : Integer); overload;
+    procedure Write( const pBuf : Pointer; len : Integer); overload;
     procedure Flush;
+
+    function  Configuration : IThriftConfiguration;
+    function  MaxMessageSize : Integer;
+    procedure ResetConsumedMessageSize( const knownSize : Int64 = -1);
+    procedure CheckReadBytesAvailable( const numBytes : Int64);
+    procedure UpdateKnownMessageSize( const size : Int64);
   end;
 
-  TTransportImpl = class( TInterfacedObject, ITransport)
-  protected
+  TTransportBase = class abstract( TInterfacedObject)
+  strict protected
     function GetIsOpen: Boolean; virtual; abstract;
     property IsOpen: Boolean read GetIsOpen;
     function Peek: Boolean; virtual;
     procedure Open(); virtual; abstract;
     procedure Close(); virtual; abstract;
-    function Read(var buf: TBytes; off: Integer; len: Integer): Integer; virtual; abstract;
-    function ReadAll(var buf: TBytes; off: Integer; len: Integer): Integer; virtual;
-    procedure Write( const buf: TBytes); overload; virtual;
-    procedure Write( const buf: TBytes; off: Integer; len: Integer); overload; virtual; abstract;
+
+    function Read(var buf: TBytes; off: Integer; len: Integer): Integer; overload; inline;
+    function Read(const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer; overload; virtual; abstract;
+    function ReadAll(var buf: TBytes; off: Integer; len: Integer): Integer;  overload; inline;
+    function ReadAll(const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer; overload; virtual;
+    procedure Write( const buf: TBytes); overload; inline;
+    procedure Write( const buf: TBytes; off: Integer; len: Integer); overload; inline;
+    procedure Write( const pBuf : Pointer; len : Integer); overload; inline;
+    procedure Write( const pBuf : Pointer; off, len : Integer); overload; virtual; abstract;
     procedure Flush; virtual;
+
+    function  Configuration : IThriftConfiguration; virtual; abstract;
+    procedure UpdateKnownMessageSize( const size : Int64); virtual; abstract;
   end;
 
-  TTransportException = class( Exception )
+  // base class for all endpoint transports, e.g. sockets, pipes or HTTP
+  TEndpointTransportBase = class abstract( TTransportBase, ITransport)
+  strict private
+    FRemainingMessageSize : Int64;
+    FKnownMessageSize : Int64;
+    FConfiguration : IThriftConfiguration;
+  strict protected
+    function  Configuration : IThriftConfiguration; override;
+    function  MaxMessageSize : Integer;
+    property  RemainingMessageSize : Int64 read FRemainingMessageSize;
+    property  KnownMessageSize : Int64 read FKnownMessageSize;
+    procedure ResetConsumedMessageSize( const newSize : Int64 = -1); inline;
+    procedure UpdateKnownMessageSize(const size : Int64); override;
+    procedure CheckReadBytesAvailable(const numBytes : Int64); inline;
+    procedure CountConsumedMessageBytes(const numBytes : Int64); inline;
+  public
+    constructor Create( const aConfig : IThriftConfiguration);  reintroduce;
+  end;
+
+  // base class for all layered transports, e.g. framed
+  TLayeredTransportBase<T : ITransport> = class abstract( TTransportBase, ITransport)
+  strict private
+    FTransport : T;
+  strict protected
+    property  InnerTransport : T read FTransport;
+    function  GetUnderlyingTransport: ITransport;
+    function  Configuration : IThriftConfiguration; override;
+    procedure UpdateKnownMessageSize( const size : Int64); override;
+    function  MaxMessageSize : Integer;  inline;
+    procedure ResetConsumedMessageSize( const knownSize : Int64 = -1);  inline;
+    procedure CheckReadBytesAvailable( const numBytes : Int64);   virtual;
+  public
+    constructor Create( const aTransport: T); reintroduce;
+    property UnderlyingTransport: ITransport read GetUnderlyingTransport;
+  end;
+
+  TTransportException = class abstract( TException)
   public
     type
       TExceptionType = (
@@ -72,98 +143,147 @@ type
         NotOpen,
         AlreadyOpen,
         TimedOut,
-        EndOfFile
+        EndOfFile,
+        BadArgs,
+        Interrupted,
+        CorruptedData
       );
-  private
-    FType : TExceptionType;
+  strict protected
+    constructor HiddenCreate(const Msg: string);
+    class function GetType: TExceptionType;  virtual; abstract;
   public
-    constructor Create( AType: TExceptionType); overload;
-    constructor Create( const msg: string); overload;
-    constructor Create( AType: TExceptionType; const msg: string); overload;
-    property Type_: TExceptionType read FType;
+    class function Create( aType: TExceptionType): TTransportException; overload; deprecated 'Use specialized TTransportException types (or regenerate from IDL)';
+    class function Create( const msg: string): TTransportException; reintroduce; overload; deprecated 'Use specialized TTransportException types (or regenerate from IDL)';
+    class function Create( aType: TExceptionType; const msg: string): TTransportException; overload; deprecated 'Use specialized TTransportException types (or regenerate from IDL)';
+    property Type_: TExceptionType read GetType;
   end;
+
+  // Needed to remove deprecation warning
+  TTransportExceptionSpecialized = class abstract (TTransportException)
+  public
+    constructor Create(const Msg: string);
+  end;
+
+  TTransportExceptionUnknown = class (TTransportExceptionSpecialized)
+  strict protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TTransportExceptionNotOpen = class (TTransportExceptionSpecialized)
+  strict protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TTransportExceptionAlreadyOpen = class (TTransportExceptionSpecialized)
+  strict protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TTransportExceptionTimedOut = class (TTransportExceptionSpecialized)
+  strict protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TTransportExceptionEndOfFile = class (TTransportExceptionSpecialized)
+  strict protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TTransportExceptionBadArgs = class (TTransportExceptionSpecialized)
+  strict protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TTransportExceptionInterrupted = class (TTransportExceptionSpecialized)
+  strict protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TTransportExceptionCorruptedData = class (TTransportExceptionSpecialized)
+  protected
+    class function GetType: TTransportException.TExceptionType;  override;
+  end;
+
+  TSecureProtocol = (
+    SSL_2, SSL_3, TLS_1,   // outdated, for compatibilty only
+    TLS_1_1, TLS_1_2       // secure (as of today)
+  );
+
+  TSecureProtocols = set of TSecureProtocol;
 
   IHTTPClient = interface( ITransport )
-    ['{0F5DB8AB-710D-4338-AAC9-46B5734C5057}']
+    ['{7BF615DD-8680-4004-A5B2-88947BA3BA3D}']
+    procedure SetDnsResolveTimeout(const Value: Integer);
+    function GetDnsResolveTimeout: Integer;
     procedure SetConnectionTimeout(const Value: Integer);
     function GetConnectionTimeout: Integer;
+    procedure SetSendTimeout(const Value: Integer);
+    function GetSendTimeout: Integer;
     procedure SetReadTimeout(const Value: Integer);
     function GetReadTimeout: Integer;
     function GetCustomHeaders: IThriftDictionary<string,string>;
     procedure SendRequest;
+    function GetSecureProtocols : TSecureProtocols;
+    procedure SetSecureProtocols( const value : TSecureProtocols);
+
+    property DnsResolveTimeout: Integer read GetDnsResolveTimeout write SetDnsResolveTimeout;
     property ConnectionTimeout: Integer read GetConnectionTimeout write SetConnectionTimeout;
+    property SendTimeout: Integer read GetSendTimeout write SetSendTimeout;
     property ReadTimeout: Integer read GetReadTimeout write SetReadTimeout;
     property CustomHeaders: IThriftDictionary<string,string> read GetCustomHeaders;
-  end;
-
-  THTTPClientImpl = class( TTransportImpl, IHTTPClient)
-  private
-    FUri : string;
-    FInputStream : IThriftStream;
-    FOutputStream : IThriftStream;
-    FConnectionTimeout : Integer;
-    FReadTimeout : Integer;
-    FCustomHeaders : IThriftDictionary<string,string>;
-
-    function CreateRequest: IXMLHTTPRequest;
-  protected
-    function GetIsOpen: Boolean; override;
-    procedure Open(); override;
-    procedure Close(); override;
-    function Read( var buf: TBytes; off: Integer; len: Integer): Integer; override;
-    procedure Write( const buf: TBytes; off: Integer; len: Integer); override;
-    procedure Flush; override;
-
-    procedure SetConnectionTimeout(const Value: Integer);
-    function GetConnectionTimeout: Integer;
-    procedure SetReadTimeout(const Value: Integer);
-    function GetReadTimeout: Integer;
-    function GetCustomHeaders: IThriftDictionary<string,string>;
-    procedure SendRequest;
-    property ConnectionTimeout: Integer read GetConnectionTimeout write SetConnectionTimeout;
-    property ReadTimeout: Integer read GetReadTimeout write SetReadTimeout;
-    property CustomHeaders: IThriftDictionary<string,string> read GetCustomHeaders;
-  public
-    constructor Create( const AUri: string);
-    destructor Destroy; override;
+    property SecureProtocols : TSecureProtocols read GetSecureProtocols write SetSecureProtocols;
   end;
 
   IServerTransport = interface
-    ['{C43B87ED-69EA-47C4-B77C-15E288252900}']
+    ['{FA01363F-6B40-482F-971E-4A085535EFC8}']
     procedure Listen;
     procedure Close;
     function Accept( const fnAccepting: TProc): ITransport;
+    function Configuration : IThriftConfiguration;
   end;
 
   TServerTransportImpl = class( TInterfacedObject, IServerTransport)
-  protected
+  strict private
+    FConfig : IThriftConfiguration;
+  strict protected
+    function  Configuration : IThriftConfiguration;
     procedure Listen; virtual; abstract;
     procedure Close; virtual; abstract;
-    function Accept( const fnAccepting: TProc): ITransport;  virtual; abstract;
+    function  Accept( const fnAccepting: TProc): ITransport;  virtual; abstract;
+  public
+    constructor Create( const aConfig : IThriftConfiguration);
   end;
 
   ITransportFactory = interface
     ['{DD809446-000F-49E1-9BFF-E0D0DC76A9D7}']
-    function GetTransport( const ATrans: ITransport): ITransport;
+    function GetTransport( const aTransport: ITransport): ITransport;
   end;
 
-  TTransportFactoryImpl = class( TInterfacedObject, ITransportFactory)
-    function GetTransport( const ATrans: ITransport): ITransport; virtual;
+  TTransportFactoryImpl = class ( TInterfacedObject, ITransportFactory)
+  strict protected
+    function GetTransport( const aTransport: ITransport): ITransport; virtual;
   end;
 
-  TTcpSocketStreamImpl = class( TThriftStreamImpl )
-  private type
+
+  TTcpSocketStreamImpl = class( TThriftStreamImpl)
+{$IFDEF OLD_SOCKETS}
+  strict private type
     TWaitForData = ( wfd_HaveData, wfd_Timeout, wfd_Error);
-  private
+  strict private
     FTcpClient : TCustomIpClient;
     FTimeout : Integer;
     function Select( ReadReady, WriteReady, ExceptFlag: PBoolean;
                      TimeOut: Integer; var wsaError : Integer): Integer;
     function WaitForData( TimeOut : Integer; pBuf : Pointer; DesiredBytes: Integer;
                           var wsaError, bytesReady : Integer): TWaitForData;
-  protected
-    procedure Write( const buffer: TBytes; offset: Integer; count: Integer); override;
-    function Read( var buffer: TBytes; offset: Integer; count: Integer): Integer; override;
+{$ELSE}
+    FTcpClient: TSocket;
+  strict protected const
+    SLEEP_TIME = 200;
+{$ENDIF}
+  strict protected
+    procedure Write( const pBuf : Pointer; offset, count: Integer); override;
+    function Read( const pBuf : Pointer; const buflen : Integer; offset: Integer; count: Integer): Integer; override;
     procedure Open; override;
     procedure Close; override;
     procedure Flush; override;
@@ -171,7 +291,11 @@ type
     function IsOpen: Boolean; override;
     function ToArray: TBytes; override;
   public
-    constructor Create( const ATcpClient: TCustomIpClient; const aTimeout : Integer = 0);
+{$IFDEF OLD_SOCKETS}
+    constructor Create( const aTcpClient: TCustomIpClient; const aTimeout : Integer = DEFAULT_THRIFT_TIMEOUT);
+{$ELSE}
+    constructor Create( const aTcpClient: TSocket; const aTimeout : Longword = DEFAULT_THRIFT_TIMEOUT);
+{$ENDIF}
   end;
 
   IStreamTransport = interface( ITransport )
@@ -182,376 +306,513 @@ type
     property OutputStream : IThriftStream read GetOutputStream;
   end;
 
-  TStreamTransportImpl = class( TTransportImpl, IStreamTransport)
-  protected
+  TStreamTransportImpl = class( TEndpointTransportBase, IStreamTransport)
+  strict protected
     FInputStream : IThriftStream;
     FOutputStream : IThriftStream;
-  protected
+  strict protected
     function GetIsOpen: Boolean; override;
 
     function GetInputStream: IThriftStream;
     function GetOutputStream: IThriftStream;
-  public
-    property InputStream : IThriftStream read GetInputStream;
-    property OutputStream : IThriftStream read GetOutputStream;
 
+  strict protected
     procedure Open; override;
     procedure Close; override;
     procedure Flush; override;
-    function Read(var buf: TBytes; off: Integer; len: Integer): Integer; override;
-    procedure Write( const buf: TBytes; off: Integer; len: Integer); override;
-    constructor Create( const AInputStream : IThriftStream; const AOutputStream : IThriftStream);
+    function  Read( const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer; override;
+    procedure Write( const pBuf : Pointer; off, len : Integer); override;
+  public
+    constructor Create( const aInputStream, aOutputStream : IThriftStream; const aConfig : IThriftConfiguration = nil);  reintroduce;
     destructor Destroy; override;
+
+    property InputStream : IThriftStream read GetInputStream;
+    property OutputStream : IThriftStream read GetOutputStream;
   end;
 
   TBufferedStreamImpl = class( TThriftStreamImpl)
-  private
+  strict private
     FStream : IThriftStream;
     FBufSize : Integer;
     FReadBuffer : TMemoryStream;
     FWriteBuffer : TMemoryStream;
-  protected
-    procedure Write( const buffer: TBytes; offset: Integer; count: Integer); override;
-    function Read( var buffer: TBytes; offset: Integer; count: Integer): Integer; override;
+  strict protected
+    procedure Write( const pBuf : Pointer; offset: Integer; count: Integer); override;
+    function Read( const pBuf : Pointer; const buflen : Integer; offset: Integer; count: Integer): Integer; override;
     procedure Open;  override;
     procedure Close; override;
     procedure Flush; override;
     function IsOpen: Boolean; override;
     function ToArray: TBytes; override;
+    function Size : Int64; override;
+    function Position : Int64; override;
   public
-    constructor Create( const AStream: IThriftStream; ABufSize: Integer);
+    constructor Create( const aStream: IThriftStream; const aBufSize : Integer);
     destructor Destroy; override;
   end;
 
   TServerSocketImpl = class( TServerTransportImpl)
-  private
+  strict private
+{$IFDEF OLD_SOCKETS}
     FServer : TTcpServer;
     FPort : Integer;
     FClientTimeout : Integer;
+{$ELSE}
+    FServer: TServerSocket;
+{$ENDIF}
     FUseBufferedSocket : Boolean;
     FOwnsServer : Boolean;
-  protected
+
+  strict protected
     function Accept( const fnAccepting: TProc) : ITransport; override;
+
   public
-    constructor Create( const AServer: TTcpServer; AClientTimeout: Integer = 0); overload;
-    constructor Create( APort: Integer; AClientTimeout: Integer = 0; AUseBufferedSockets: Boolean = FALSE); overload;
+    {$IFDEF OLD_SOCKETS}
+    constructor Create( const aServer: TTcpServer; const aClientTimeout : Integer = DEFAULT_THRIFT_TIMEOUT; const aConfig : IThriftConfiguration = nil);  overload;
+    constructor Create( const aPort: Integer; const aClientTimeout: Integer = DEFAULT_THRIFT_TIMEOUT; aUseBufferedSockets: Boolean = FALSE; const aConfig : IThriftConfiguration = nil);  overload;
+    {$ELSE}
+    constructor Create( const aServer: TServerSocket; const aClientTimeout: Longword = DEFAULT_THRIFT_TIMEOUT; const aConfig : IThriftConfiguration = nil);  overload;
+    constructor Create( const aPort: Integer; const aClientTimeout: Longword = DEFAULT_THRIFT_TIMEOUT; aUseBufferedSockets: Boolean = FALSE; const aConfig : IThriftConfiguration = nil);  overload;
+    {$ENDIF}
+
     destructor Destroy; override;
     procedure Listen; override;
     procedure Close; override;
   end;
 
-  TBufferedTransportImpl = class( TTransportImpl )
-  private
+  TBufferedTransportImpl = class( TLayeredTransportBase<IStreamTransport>)
+  strict private
     FInputBuffer : IThriftStream;
     FOutputBuffer : IThriftStream;
-    FTransport : IStreamTransport;
     FBufSize : Integer;
 
     procedure InitBuffers;
-    function GetUnderlyingTransport: ITransport;
-  protected
+  strict protected
     function GetIsOpen: Boolean; override;
     procedure Flush; override;
   public
+    type
+      TFactory = class( TTransportFactoryImpl )
+      public
+        function GetTransport( const aTransport: ITransport): ITransport; override;
+      end;
+
+    constructor Create( const aTransport : IStreamTransport; const aBufSize: Integer = 1024);
     procedure Open(); override;
     procedure Close(); override;
-    function Read(var buf: TBytes; off: Integer; len: Integer): Integer; override;
-    procedure Write( const buf: TBytes; off: Integer; len: Integer); override;
-    constructor Create( const ATransport : IStreamTransport ); overload;
-    constructor Create( const ATransport : IStreamTransport; ABufSize: Integer); overload;
-    property UnderlyingTransport: ITransport read GetUnderlyingTransport;
+    function  Read( const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer; override;
+    procedure Write( const pBuf : Pointer; off, len : Integer); override;
+    procedure CheckReadBytesAvailable( const value : Int64); override;
     property IsOpen: Boolean read GetIsOpen;
   end;
 
   TSocketImpl = class(TStreamTransportImpl)
-  private
+  strict private
+{$IFDEF OLD_SOCKETS}
     FClient : TCustomIpClient;
+{$ELSE}
+    FClient: TSocket;
+{$ENDIF}
     FOwnsClient : Boolean;
     FHost : string;
     FPort : Integer;
+{$IFDEF OLD_SOCKETS}
     FTimeout : Integer;
+{$ELSE}
+    FTimeout : Longword;
+{$ENDIF}
 
     procedure InitSocket;
-  protected
+  strict protected
     function GetIsOpen: Boolean; override;
   public
-    procedure Open; override;
-    constructor Create( const AClient : TCustomIpClient; aOwnsClient : Boolean; ATimeout: Integer = 0); overload;
-    constructor Create( const AHost: string; APort: Integer; ATimeout: Integer = 0); overload;
+{$IFDEF OLD_SOCKETS}
+    constructor Create( const aClient : TCustomIpClient; const aOwnsClient : Boolean; const aTimeout: Integer = DEFAULT_THRIFT_TIMEOUT; const aConfig : IThriftConfiguration = nil); overload;
+    constructor Create( const aHost: string; const aPort: Integer; const aTimeout: Integer = DEFAULT_THRIFT_TIMEOUT; const aConfig : IThriftConfiguration = nil); overload;
+{$ELSE}
+    constructor Create(const aClient: TSocket; const aOwnsClient: Boolean; const aConfig : IThriftConfiguration = nil); overload;
+    constructor Create( const aHost: string; const aPort: Integer; const aTimeout: Longword = DEFAULT_THRIFT_TIMEOUT; const aConfig : IThriftConfiguration = nil); overload;
+{$ENDIF}
     destructor Destroy; override;
+
+    procedure Open; override;
     procedure Close; override;
+{$IFDEF OLD_SOCKETS}
     property TcpClient: TCustomIpClient read FClient;
+{$ELSE}
+    property TcpClient: TSocket read FClient;
+{$ENDIF}
     property Host : string read FHost;
     property Port: Integer read FPort;
   end;
 
-  TFramedTransportImpl = class( TTransportImpl)
-  private const
-    FHeaderSize : Integer = 4;
-  private class var
-    FHeader_Dummy : array of Byte;
-  protected
-    FTransport : ITransport;
+  TFramedTransportImpl = class( TLayeredTransportBase<ITransport>)
+  strict protected type
+    TFramedHeader = Int32;
+  strict protected
     FWriteBuffer : TMemoryStream;
     FReadBuffer : TMemoryStream;
 
     procedure InitWriteBuffer;
     procedure ReadFrame;
+
+    procedure Open(); override;
+    function  GetIsOpen: Boolean; override;
+
+    procedure Close(); override;
+    function  Read( const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer; override;
+    procedure Write( const pBuf : Pointer; off, len : Integer); override;
+    procedure CheckReadBytesAvailable( const value : Int64);  override;
+    procedure Flush; override;
+
   public
     type
       TFactory = class( TTransportFactoryImpl )
       public
-        function GetTransport( const ATrans: ITransport): ITransport; override;
+        function GetTransport( const aTransport: ITransport): ITransport; override;
       end;
 
-{$IF CompilerVersion >= 21.0}
-    class constructor Create;
-{$IFEND}
-    constructor Create; overload;
-    constructor Create( const ATrans: ITransport); overload;
+    constructor Create( const aTransport: ITransport); overload;
     destructor Destroy; override;
-
-    procedure Open(); override;
-    function GetIsOpen: Boolean; override;
-
-    procedure Close(); override;
-    function Read(var buf: TBytes; off: Integer; len: Integer): Integer; override;
-    procedure Write( const buf: TBytes; off: Integer; len: Integer); override;
-    procedure Flush; override;
   end;
 
-{$IF CompilerVersion < 21.0}
-procedure TFramedTransportImpl_Initialize;
-{$IFEND}
 
 const
-  DEFAULT_THRIFT_TIMEOUT = 5 * 1000; // ms
-
+  DEFAULT_THRIFT_SECUREPROTOCOLS = [ TSecureProtocol.TLS_1_1, TSecureProtocol.TLS_1_2];
 
 implementation
 
-{ TTransportImpl }
 
-procedure TTransportImpl.Flush;
+{ TTransportBase }
+
+procedure TTransportBase.Flush;
 begin
-
+  // nothing to do
 end;
 
-function TTransportImpl.Peek: Boolean;
+function TTransportBase.Peek: Boolean;
 begin
   Result := IsOpen;
 end;
 
-function TTransportImpl.ReadAll( var buf: TBytes; off, len: Integer): Integer;
-var
-  got : Integer;
-  ret : Integer;
+function TTransportBase.Read(var buf: TBytes; off: Integer; len: Integer): Integer;
 begin
-  got := 0;
-  while ( got < len) do
-  begin
-    ret := Read( buf, off + got, len - got);
-    if ( ret <= 0 ) then
-    begin
-      raise TTransportException.Create( 'Cannot read, Remote side has closed' );
-    end;
-    got := got + ret;
+  if Length(buf) > 0
+  then result := Read( @buf[0], Length(buf), off, len)
+  else result := 0;
+end;
+
+function TTransportBase.ReadAll(var buf: TBytes; off: Integer; len: Integer): Integer;
+begin
+  if Length(buf) > 0
+  then result := ReadAll( @buf[0], Length(buf), off, len)
+  else result := 0;
+end;
+
+function TTransportBase.ReadAll(const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer;
+var ret : Integer;
+begin
+  result := 0;
+  while result < len do begin
+    ret := Read( pBuf, buflen, off + result, len - result);
+    if ret > 0
+    then Inc( result, ret)
+    else raise TTransportExceptionNotOpen.Create( 'Cannot read, Remote side has closed' );
   end;
-  Result := got;
 end;
 
-procedure TTransportImpl.Write( const buf: TBytes);
+procedure TTransportBase.Write( const buf: TBytes);
 begin
-  Self.Write( buf, 0, Length(buf) );
+  if Length(buf) > 0
+  then Write( @buf[0], 0, Length(buf));
 end;
 
-{ THTTPClientImpl }
-
-procedure THTTPClientImpl.Close;
+procedure TTransportBase.Write( const buf: TBytes; off: Integer; len: Integer);
 begin
-  FInputStream := nil;
-  FOutputStream := nil;
+  if Length(buf) > 0
+  then Write( @buf[0], off, len);
 end;
 
-constructor THTTPClientImpl.Create(const AUri: string);
+procedure TTransportBase.Write( const pBuf : Pointer; len : Integer);
+begin
+  Self.Write( pBuf, 0, len);
+end;
+
+
+{ TEndpointTransportBase }
+
+constructor TEndpointTransportBase.Create( const aConfig : IThriftConfiguration);
 begin
   inherited Create;
-  FUri := AUri;
-  FCustomHeaders := TThriftDictionaryImpl<string,string>.Create;
-  FOutputStream := TThriftStreamAdapterDelphi.Create( TMemoryStream.Create, True);
+
+  if aConfig <> nil
+  then FConfiguration := aConfig
+  else FConfiguration := TThriftConfigurationImpl.Create;
+
+  ResetConsumedMessageSize;
 end;
 
-function THTTPClientImpl.CreateRequest: IXMLHTTPRequest;
-var
-  pair : TPair<string,string>;
+
+function TEndpointTransportBase.Configuration : IThriftConfiguration;
 begin
-{$IF CompilerVersion >= 21.0}
-  Result := CoXMLHTTP.Create;
-{$ELSE}
-  Result := CoXMLHTTPRequest.Create;
-{$IFEND}
+  result := FConfiguration;
+end;
 
-  Result.open('POST', FUri, False, '', '');
-  Result.setRequestHeader( 'Content-Type', 'application/x-thrift');
-  Result.setRequestHeader( 'Accept', 'application/x-thrift');
-  Result.setRequestHeader( 'User-Agent', 'Delphi/IHTTPClient');
 
-  for pair in FCustomHeaders do
-  begin
-    Result.setRequestHeader( pair.Key, pair.Value );
+function TEndpointTransportBase.MaxMessageSize : Integer;
+begin
+  ASSERT( Configuration <> nil);
+  result := Configuration.MaxMessageSize;
+end;
+
+
+procedure TEndpointTransportBase.ResetConsumedMessageSize( const newSize : Int64);
+// Resets RemainingMessageSize to the configured maximum
+begin
+  // full reset
+  if newSize < 0 then begin
+    FKnownMessageSize := MaxMessageSize;
+    FRemainingMessageSize := MaxMessageSize;
+    Exit;
+  end;
+
+  // update only: message size can shrink, but not grow
+  ASSERT( KnownMessageSize <= MaxMessageSize);
+  if newSize > KnownMessageSize
+  then raise TTransportExceptionEndOfFile.Create('MaxMessageSize reached');
+
+  FKnownMessageSize := newSize;
+  FRemainingMessageSize := newSize;
+end;
+
+
+procedure TEndpointTransportBase.UpdateKnownMessageSize( const size : Int64);
+// Updates RemainingMessageSize to reflect then known real message size (e.g. framed transport).
+// Will throw if we already consumed too many bytes.
+var consumed : Int64;
+begin
+  consumed := KnownMessageSize - RemainingMessageSize;
+  ResetConsumedMessageSize(size);
+  CountConsumedMessageBytes(consumed);
+end;
+
+
+procedure TEndpointTransportBase.CheckReadBytesAvailable( const numBytes : Int64);
+// Throws if there are not enough bytes in the input stream to satisfy a read of numBytes bytes of data
+begin
+  if RemainingMessageSize < numBytes
+  then raise TTransportExceptionEndOfFile.Create('MaxMessageSize reached');
+end;
+
+
+procedure TEndpointTransportBase.CountConsumedMessageBytes( const numBytes : Int64);
+// Consumes numBytes from the RemainingMessageSize.
+begin
+  if (RemainingMessageSize >= numBytes)
+  then Dec( FRemainingMessageSize, numBytes)
+  else begin
+    FRemainingMessageSize := 0;
+    raise TTransportExceptionEndOfFile.Create('MaxMessageSize reached');
   end;
 end;
 
-destructor THTTPClientImpl.Destroy;
+{ TLayeredTransportBase }
+
+constructor TLayeredTransportBase<T>.Create( const aTransport: T);
 begin
-  Close;
-  inherited;
+  inherited Create;
+  FTransport := aTransport;
 end;
 
-procedure THTTPClientImpl.Flush;
+function TLayeredTransportBase<T>.GetUnderlyingTransport: ITransport;
 begin
-  try
-    SendRequest;
-  finally
-    FOutputStream := nil;
-    FOutputStream := TThriftStreamAdapterDelphi.Create( TMemoryStream.Create, True);
-  end;
+  result := InnerTransport;
 end;
 
-function THTTPClientImpl.GetConnectionTimeout: Integer;
+function TLayeredTransportBase<T>.Configuration : IThriftConfiguration;
 begin
-  Result := FConnectionTimeout;
+  result := InnerTransport.Configuration;
 end;
 
-function THTTPClientImpl.GetCustomHeaders: IThriftDictionary<string,string>;
+procedure TLayeredTransportBase<T>.UpdateKnownMessageSize( const size : Int64);
 begin
-  Result := FCustomHeaders;
+  InnerTransport.UpdateKnownMessageSize( size);
 end;
 
-function THTTPClientImpl.GetIsOpen: Boolean;
+
+function TLayeredTransportBase<T>.MaxMessageSize : Integer;
 begin
-  Result := True;
+  result := InnerTransport.MaxMessageSize;
 end;
 
-function THTTPClientImpl.GetReadTimeout: Integer;
+
+procedure TLayeredTransportBase<T>.ResetConsumedMessageSize( const knownSize : Int64 = -1);
 begin
-  Result := FReadTimeout;
+  InnerTransport.ResetConsumedMessageSize( knownSize);
 end;
 
-procedure THTTPClientImpl.Open;
-begin
 
+procedure TLayeredTransportBase<T>.CheckReadBytesAvailable( const numBytes : Int64);
+begin
+  InnerTransport.CheckReadBytesAvailable( numBytes);
 end;
 
-function THTTPClientImpl.Read( var buf: TBytes; off, len: Integer): Integer;
-begin
-  if FInputStream = nil then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.NotOpen,
-      'No request has been sent');
-  end;
-  try
-    Result := FInputStream.Read( buf, off, len )
-  except
-    on E: Exception do
-    begin
-      raise TTransportException.Create( TTransportException.TExceptionType.Unknown,
-        E.Message);
-    end;
-  end;
-end;
 
-procedure THTTPClientImpl.SendRequest;
-var
-  xmlhttp : IXMLHTTPRequest;
-  ms : TMemoryStream;
-  a : TBytes;
-  len : Integer;
-begin
-  xmlhttp := CreateRequest;
-
-  ms := TMemoryStream.Create;
-  try
-    a := FOutputStream.ToArray;
-    len := Length(a);
-    if len > 0 then
-    begin
-      ms.WriteBuffer( Pointer(@a[0])^, len);
-    end;
-    ms.Position := 0;
-    xmlhttp.send( IUnknown( TStreamAdapter.Create( ms, soReference )));
-    FInputStream := nil;
-    FInputStream := TThriftStreamAdapterCOM.Create( IUnknown( xmlhttp.responseStream) as IStream);
-  finally
-    ms.Free;
-  end;
-end;
-
-procedure THTTPClientImpl.SetConnectionTimeout(const Value: Integer);
-begin
-  FConnectionTimeout := Value;
-end;
-
-procedure THTTPClientImpl.SetReadTimeout(const Value: Integer);
-begin
-  FReadTimeout := Value
-end;
-
-procedure THTTPClientImpl.Write( const buf: TBytes; off, len: Integer);
-begin
-  FOutputStream.Write( buf, off, len);
-end;
 
 { TTransportException }
 
-constructor TTransportException.Create(AType: TExceptionType);
+constructor TTransportException.HiddenCreate(const Msg: string);
+begin
+  inherited Create(Msg);
+end;
+
+class function TTransportException.Create(aType: TExceptionType): TTransportException;
 begin
   //no inherited;
-  Create( AType, '' )
+{$WARN SYMBOL_DEPRECATED OFF}
+  Result := Create(aType, '')
+{$WARN SYMBOL_DEPRECATED DEFAULT}
 end;
 
-constructor TTransportException.Create(AType: TExceptionType;
-  const msg: string);
+class function TTransportException.Create(aType: TExceptionType; const msg: string): TTransportException;
 begin
-  inherited Create(msg);
-  FType := AType;
+  case aType of
+    TExceptionType.NotOpen:     Result := TTransportExceptionNotOpen.Create(msg);
+    TExceptionType.AlreadyOpen: Result := TTransportExceptionAlreadyOpen.Create(msg);
+    TExceptionType.TimedOut:    Result := TTransportExceptionTimedOut.Create(msg);
+    TExceptionType.EndOfFile:   Result := TTransportExceptionEndOfFile.Create(msg);
+    TExceptionType.BadArgs:     Result := TTransportExceptionBadArgs.Create(msg);
+    TExceptionType.Interrupted: Result := TTransportExceptionInterrupted.Create(msg);
+  else
+    ASSERT( TExceptionType.Unknown = aType);
+    Result := TTransportExceptionUnknown.Create(msg);
+  end;
 end;
 
-constructor TTransportException.Create(const msg: string);
+class function TTransportException.Create(const msg: string): TTransportException;
 begin
-  inherited Create(msg);
+  Result := TTransportExceptionUnknown.Create(Msg);
+end;
+
+{ TTransportExceptionSpecialized }
+
+constructor TTransportExceptionSpecialized.Create(const Msg: string);
+begin
+  inherited HiddenCreate(Msg);
+end;
+
+{ specialized TTransportExceptions }
+
+class function TTransportExceptionUnknown.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.Unknown;
+end;
+
+class function TTransportExceptionNotOpen.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.NotOpen;
+end;
+
+class function TTransportExceptionAlreadyOpen.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.AlreadyOpen;
+end;
+
+class function TTransportExceptionTimedOut.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.TimedOut;
+end;
+
+class function TTransportExceptionEndOfFile.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.EndOfFile;
+end;
+
+class function TTransportExceptionBadArgs.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.BadArgs;
+end;
+
+class function TTransportExceptionInterrupted.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.Interrupted;
+end;
+
+class function TTransportExceptionCorruptedData.GetType: TTransportException.TExceptionType;
+begin
+  result := TExceptionType.CorruptedData;
 end;
 
 { TTransportFactoryImpl }
 
-function TTransportFactoryImpl.GetTransport( const ATrans: ITransport): ITransport;
+function TTransportFactoryImpl.GetTransport( const aTransport: ITransport): ITransport;
 begin
-  Result := ATrans;
+  Result := aTransport;
+end;
+
+
+{ TServerTransportImpl }
+
+constructor TServerTransportImpl.Create( const aConfig : IThriftConfiguration);
+begin
+  inherited Create;
+  if aConfig <> nil
+  then FConfig := aConfig
+  else FConfig := TThriftConfigurationImpl.Create;
+end;
+
+function TServerTransportImpl.Configuration : IThriftConfiguration;
+begin
+  result := FConfig;
 end;
 
 { TServerSocket }
 
-constructor TServerSocketImpl.Create( const AServer: TTcpServer; AClientTimeout: Integer);
+{$IFDEF OLD_SOCKETS}
+constructor TServerSocketImpl.Create( const aServer: TTcpServer; const aClientTimeout : Integer; const aConfig : IThriftConfiguration);
+{$ELSE}
+constructor TServerSocketImpl.Create( const aServer: TServerSocket; const aClientTimeout: Longword; const aConfig : IThriftConfiguration);
+{$ENDIF}
 begin
-  inherited Create;
-  FServer := AServer;
-  FClientTimeout := AClientTimeout;
+  inherited Create( aConfig);
+  FServer := aServer;
+
+
+{$IFDEF OLD_SOCKETS}
+  FClientTimeout := aClientTimeout;
+{$ELSE}
+  FServer.RecvTimeout := aClientTimeout;
+  FServer.SendTimeout := aClientTimeout;
+{$ENDIF}
 end;
 
-constructor TServerSocketImpl.Create(APort, AClientTimeout: Integer; AUseBufferedSockets: Boolean);
+
+{$IFDEF OLD_SOCKETS}
+constructor TServerSocketImpl.Create( const aPort: Integer; const aClientTimeout: Integer; aUseBufferedSockets: Boolean; const aConfig : IThriftConfiguration);
+{$ELSE}
+constructor TServerSocketImpl.Create( const aPort: Integer; const aClientTimeout: Longword; aUseBufferedSockets: Boolean; const aConfig : IThriftConfiguration);
+{$ENDIF}
 begin
-  inherited Create;
-  FPort := APort;
-  FClientTimeout := AClientTimeout;
-  FUseBufferedSocket := AUseBufferedSockets;
+  inherited Create( aConfig);
+
+{$IFDEF OLD_SOCKETS}
+  FPort := aPort;
+  FClientTimeout := aClientTimeout;
+
   FOwnsServer := True;
   FServer := TTcpServer.Create( nil );
   FServer.BlockMode := bmBlocking;
-{$IF CompilerVersion >= 21.0}
+  {$IF CompilerVersion >= 21.0}
   FServer.LocalPort := AnsiString( IntToStr( FPort));
-{$ELSE}
+  {$ELSE}
   FServer.LocalPort := IntToStr( FPort);
-{$IFEND}
+  {$IFEND}
+{$ELSE}
+  FOwnsServer := True;
+  FServer := TServerSocket.Create(aPort, aClientTimeout, aClientTimeout);
+{$ENDIF}
+
+  FUseBufferedSocket := aUseBufferedSockets;
 end;
 
 destructor TServerSocketImpl.Destroy;
@@ -565,15 +826,18 @@ end;
 
 function TServerSocketImpl.Accept( const fnAccepting: TProc): ITransport;
 var
+{$IFDEF OLD_SOCKETS}
   client : TCustomIpClient;
+{$ELSE}
+  client: TSocket;
+{$ENDIF}
   trans  : IStreamTransport;
 begin
-  if FServer = nil then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.NotOpen,
-      'No underlying server socket.');
+  if FServer = nil then begin
+    raise TTransportExceptionNotOpen.Create('No underlying server socket.');
   end;
 
+{$IFDEF OLD_SOCKETS}
   client := nil;
   try
     client := TCustomIpClient.Create(nil);
@@ -581,20 +845,18 @@ begin
     if Assigned(fnAccepting)
     then fnAccepting();
 
-    if not FServer.Accept( client) then
-    begin
+    if not FServer.Accept( client) then begin
       client.Free;
       Result := nil;
       Exit;
     end;
 
-    if client = nil then
-    begin
+    if client = nil then begin
       Result := nil;
       Exit;
     end;
 
-    trans := TSocketImpl.Create( client, TRUE, FClientTimeout);
+    trans := TSocketImpl.Create( client, TRUE, FClientTimeout, Configuration);
     client := nil;  // trans owns it now
 
     if FUseBufferedSocket
@@ -604,59 +866,94 @@ begin
   except
     on E: Exception do begin
       client.Free;
-      raise TTransportException.Create( E.ToString );
+      raise TTransportExceptionUnknown.Create(E.ToString);
     end;
   end;
+{$ELSE}
+  if Assigned(fnAccepting) then
+    fnAccepting();
+
+  client := FServer.Accept;
+  try
+    trans := TSocketImpl.Create(client, TRUE, Configuration);
+    client := nil;
+
+    if FUseBufferedSocket then
+      Result := TBufferedTransportImpl.Create(trans)
+    else
+      Result := trans;
+  except
+    client.Free;
+    raise;
+  end;
+{$ENDIF}
 end;
 
 procedure TServerSocketImpl.Listen;
 begin
   if FServer <> nil then
   begin
+{$IFDEF OLD_SOCKETS}
     try
       FServer.Active := True;
     except
-      on E: Exception do
-      begin
-        raise TTransportException.Create('Could not accept on listening socket: ' + E.Message);
-      end;
+      on E: Exception
+      do raise TTransportExceptionUnknown.Create('Could not accept on listening socket: ' + E.Message);
     end;
+{$ELSE}
+    FServer.Listen;
+{$ENDIF}
   end;
 end;
 
 procedure TServerSocketImpl.Close;
 begin
   if FServer <> nil then
-  begin
+{$IFDEF OLD_SOCKETS}
     try
       FServer.Active := False;
     except
-      on E: Exception do
-      begin
-        raise TTransportException.Create('Error on closing socket : ' + E.Message);
-      end;
+      on E: Exception
+      do raise TTransportExceptionUnknown.Create('Error on closing socket : ' + E.Message);
     end;
-  end;
+{$ELSE}
+    FServer.Close;
+{$ENDIF}
 end;
 
 { TSocket }
 
-constructor TSocketImpl.Create( const AClient : TCustomIpClient; aOwnsClient : Boolean; ATimeout: Integer = 0);
+{$IFDEF OLD_SOCKETS}
+constructor TSocketImpl.Create( const aClient : TCustomIpClient; const aOwnsClient : Boolean; const aTimeout: Integer; const aConfig : IThriftConfiguration);
+{$ELSE}
+constructor TSocketImpl.Create(const aClient: TSocket; const aOwnsClient: Boolean; const aConfig : IThriftConfiguration);
+{$ENDIF}
 var stream : IThriftStream;
 begin
-  FClient := AClient;
-  FTimeout := ATimeout;
+  FClient := aClient;
   FOwnsClient := aOwnsClient;
+
+{$IFDEF OLD_SOCKETS}
+  FTimeout := aTimeout;
+{$ELSE}
+  FTimeout := aClient.RecvTimeout;
+{$ENDIF}
+
   stream := TTcpSocketStreamImpl.Create( FClient, FTimeout);
-  inherited Create( stream, stream);
+  inherited Create( stream, stream, aConfig);
 end;
 
-constructor TSocketImpl.Create(const AHost: string; APort, ATimeout: Integer);
+
+{$IFDEF OLD_SOCKETS}
+constructor TSocketImpl.Create(const aHost: string; const aPort, aTimeout: Integer; const aConfig : IThriftConfiguration);
+{$ELSE}
+constructor TSocketImpl.Create(const aHost: string; const aPort : Integer; const aTimeout: Longword; const aConfig : IThriftConfiguration);
+{$ENDIF}
 begin
-  inherited Create(nil,nil);
-  FHost := AHost;
-  FPort := APort;
-  FTimeout := ATimeout;
+  inherited Create(nil,nil, aConfig);
+  FHost := aHost;
+  FPort := aPort;
+  FTimeout := aTimeout;
   InitSocket;
 end;
 
@@ -670,13 +967,22 @@ end;
 procedure TSocketImpl.Close;
 begin
   inherited Close;
+
+  FInputStream := nil;
+  FOutputStream := nil;
+
   if FOwnsClient
-  then FreeAndNil( FClient);
+  then FreeAndNil( FClient)
+  else FClient := nil;
 end;
 
 function TSocketImpl.GetIsOpen: Boolean;
 begin
+{$IFDEF OLD_SOCKETS}
   Result := (FClient <> nil) and FClient.Connected;
+{$ELSE}
+  Result := (FClient <> nil) and FClient.IsOpen
+{$ENDIF}
 end;
 
 procedure TSocketImpl.InitSocket;
@@ -687,7 +993,11 @@ begin
   then FreeAndNil( FClient)
   else FClient := nil;
 
+{$IFDEF OLD_SOCKETS}
   FClient := TTcpClient.Create( nil);
+{$ELSE}
+  FClient := TSocket.Create(FHost, FPort);
+{$ENDIF}
   FOwnsClient := True;
 
   stream := TTcpSocketStreamImpl.Create( FClient, FTimeout);
@@ -697,32 +1007,28 @@ end;
 
 procedure TSocketImpl.Open;
 begin
-  if IsOpen then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.AlreadyOpen,
-      'Socket already connected');
+  if IsOpen then begin
+    raise TTransportExceptionAlreadyOpen.Create('Socket already connected');
   end;
 
-  if FHost =  '' then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.NotOpen,
-      'Cannot open null host');
+  if FHost = '' then begin
+    raise TTransportExceptionNotOpen.Create('Cannot open null host');
   end;
 
-  if Port <= 0 then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.NotOpen,
-      'Cannot open without port');
+  if Port <= 0 then begin
+    raise TTransportExceptionNotOpen.Create('Cannot open without port');
   end;
 
-  if FClient = nil then
-  begin
-    InitSocket;
-  end;
+  if FClient = nil
+  then InitSocket;
 
+{$IFDEF OLD_SOCKETS}
   FClient.RemoteHost := TSocketHost( Host);
   FClient.RemotePort := TSocketPort( IntToStr( Port));
   FClient.Connect;
+{$ELSE}
+  FClient.Open;
+{$ENDIF}
 
   FInputStream := TTcpSocketStreamImpl.Create( FClient, FTimeout);
   FOutputStream := FInputStream;
@@ -742,11 +1048,11 @@ begin
   FWriteBuffer := nil;
 end;
 
-constructor TBufferedStreamImpl.Create( const AStream: IThriftStream; ABufSize: Integer);
+constructor TBufferedStreamImpl.Create( const aStream: IThriftStream; const aBufSize : Integer);
 begin
   inherited Create;
-  FStream := AStream;
-  FBufSize := ABufSize;
+  FStream := aStream;
+  FBufSize := aBufSize;
   FReadBuffer := TMemoryStream.Create;
   FWriteBuffer := TMemoryStream.Create;
 end;
@@ -762,11 +1068,9 @@ var
   buf : TBytes;
   len : Integer;
 begin
-  if IsOpen then
-  begin
+  if IsOpen then begin
     len := FWriteBuffer.Size;
-    if len > 0 then
-    begin
+    if len > 0 then begin
       SetLength( buf, len );
       FWriteBuffer.Position := 0;
       FWriteBuffer.Read( Pointer(@buf[0])^, len );
@@ -780,27 +1084,28 @@ function TBufferedStreamImpl.IsOpen: Boolean;
 begin
   Result := (FWriteBuffer <> nil)
         and (FReadBuffer <> nil)
-        and (FStream <> nil);
+        and (FStream <> nil)
+        and FStream.IsOpen;
 end;
 
 procedure TBufferedStreamImpl.Open;
 begin
-
+  FStream.Open;
 end;
 
-function TBufferedStreamImpl.Read( var buffer: TBytes; offset: Integer; count: Integer): Integer;
+function TBufferedStreamImpl.Read( const pBuf : Pointer; const buflen : Integer; offset: Integer; count: Integer): Integer;
 var
   nRead : Integer;
   tempbuf : TBytes;
+  pTmp : PByte;
 begin
   inherited;
   Result := 0;
-  if IsOpen then
-  begin
+
+  if IsOpen then begin
     while count > 0 do begin
 
-      if FReadBuffer.Position >= FReadBuffer.Size then
-      begin
+      if FReadBuffer.Position >= FReadBuffer.Size then begin
         FReadBuffer.Clear;
         SetLength( tempbuf, FBufSize);
         nRead := FStream.Read( tempbuf, 0, FBufSize );
@@ -810,10 +1115,11 @@ begin
         FReadBuffer.Position := 0;
       end;
 
-      if FReadBuffer.Position < FReadBuffer.Size then
-      begin
-        nRead  := Min( FReadBuffer.Size - FReadBuffer.Position, count);
-        Inc( Result, FReadBuffer.Read( Pointer(@buffer[offset])^, nRead));
+      if FReadBuffer.Position < FReadBuffer.Size then begin
+        nRead := Min( FReadBuffer.Size - FReadBuffer.Position, count);
+        pTmp  := pBuf;
+        Inc( pTmp, offset);
+        Inc( Result, FReadBuffer.Read( pTmp^, nRead));
         Dec( count, nRead);
         Inc( offset, nRead);
       end;
@@ -821,68 +1127,58 @@ begin
   end;
 end;
 
-function TBufferedStreamImpl.ToArray: TBytes;
-var
-  len : Integer;
-begin
-  len := 0;
 
-  if IsOpen then
-  begin
-    len := FReadBuffer.Size;
-  end;
+function TBufferedStreamImpl.ToArray: TBytes;
+var len : Integer;
+begin
+  if IsOpen
+  then len := FReadBuffer.Size
+  else len := 0;
 
   SetLength( Result, len);
 
-  if len > 0 then
-  begin
+  if len > 0 then begin
     FReadBuffer.Position := 0;
     FReadBuffer.Read( Pointer(@Result[0])^, len );
   end;
 end;
 
-procedure TBufferedStreamImpl.Write( const buffer: TBytes; offset: Integer; count: Integer);
+procedure TBufferedStreamImpl.Write( const pBuf : Pointer; offset: Integer; count: Integer);
+var pTmp : PByte;
 begin
   inherited;
-  if count > 0 then
-  begin
-    if IsOpen then
-    begin
-      FWriteBuffer.Write( Pointer(@buffer[offset])^, count );
-      if FWriteBuffer.Size > FBufSize then
-      begin
+  if count > 0 then begin
+    if IsOpen then begin
+      pTmp := pBuf;
+      Inc( pTmp, offset);
+      FWriteBuffer.Write( pTmp^, count );
+      if FWriteBuffer.Size > FBufSize then begin
         Flush;
       end;
     end;
   end;
 end;
 
-{ TStreamTransportImpl }
 
-procedure TStreamTransportImpl.Close;
+function TBufferedStreamImpl.Size : Int64;
 begin
-  if FInputStream <> FOutputStream then
-  begin
-    if FInputStream <> nil then
-    begin
-      FInputStream := nil;
-    end;
-    if FOutputStream <> nil then
-    begin
-      FOutputStream := nil;
-    end;
-  end else
-  begin
-    FInputStream := nil;
-    FOutputStream := nil;
-  end;
+  result := FReadBuffer.Size;
 end;
 
-constructor TStreamTransportImpl.Create( const AInputStream : IThriftStream; const AOutputStream : IThriftStream);
+
+function TBufferedStreamImpl.Position : Int64;
 begin
-  inherited Create;
-  FInputStream := AInputStream;
-  FOutputStream := AOutputStream;
+  result := FReadBuffer.Position;
+end;
+
+
+{ TStreamTransportImpl }
+
+constructor TStreamTransportImpl.Create( const aInputStream, aOutputStream : IThriftStream; const aConfig : IThriftConfiguration);
+begin
+  inherited Create( aConfig);
+  FInputStream := aInputStream;
+  FOutputStream := aOutputStream;
 end;
 
 destructor TStreamTransportImpl.Destroy;
@@ -892,11 +1188,16 @@ begin
   inherited;
 end;
 
+procedure TStreamTransportImpl.Close;
+begin
+  FInputStream := nil;
+  FOutputStream := nil;
+end;
+
 procedure TStreamTransportImpl.Flush;
 begin
-  if FOutputStream = nil then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.NotOpen, 'Cannot flush null outputstream' );
+  if FOutputStream = nil then begin
+    raise TTransportExceptionNotOpen.Create('Cannot flush null outputstream' );
   end;
 
   FOutputStream.Flush;
@@ -914,168 +1215,153 @@ end;
 
 function TStreamTransportImpl.GetOutputStream: IThriftStream;
 begin
-  Result := FInputStream;
+  Result := FOutputStream;
 end;
 
 procedure TStreamTransportImpl.Open;
 begin
-
+  // nothing to do
 end;
 
-function TStreamTransportImpl.Read(var buf: TBytes; off, len: Integer): Integer;
+function TStreamTransportImpl.Read( const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer;
 begin
-  if FInputStream = nil then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.NotOpen, 'Cannot read from null inputstream' );
-  end;
-  Result := FInputStream.Read( buf, off, len );
+  if FInputStream = nil
+  then raise TTransportExceptionNotOpen.Create('Cannot read from null inputstream' );
+
+  Result := FInputStream.Read( pBuf,buflen, off, len );
+  CountConsumedMessageBytes( result);
 end;
 
-procedure TStreamTransportImpl.Write(const buf: TBytes; off, len: Integer);
+procedure TStreamTransportImpl.Write( const pBuf : Pointer; off, len : Integer);
 begin
-  if FOutputStream = nil then
-  begin
-    raise TTransportException.Create( TTransportException.TExceptionType.NotOpen, 'Cannot write to null outputstream' );
-  end;
+  if FOutputStream = nil
+  then raise TTransportExceptionNotOpen.Create('Cannot write to null outputstream' );
 
-  FOutputStream.Write( buf, off, len );
+  FOutputStream.Write( pBuf, off, len );
 end;
 
 { TBufferedTransportImpl }
 
-constructor TBufferedTransportImpl.Create( const ATransport: IStreamTransport);
+constructor TBufferedTransportImpl.Create( const aTransport : IStreamTransport; const aBufSize: Integer);
 begin
-  //no inherited;
-  Create( ATransport, 1024 );
+  ASSERT( aTransport <> nil);
+  inherited Create( aTransport);
+  FBufSize := aBufSize;
+  InitBuffers;
 end;
 
 procedure TBufferedTransportImpl.Close;
 begin
-  FTransport.Close;
-end;
-
-constructor TBufferedTransportImpl.Create( const ATransport: IStreamTransport;
-  ABufSize: Integer);
-begin
-  inherited Create;
-  FTransport := ATransport;
-  FBufSize := ABufSize;
-  InitBuffers;
+  InnerTransport.Close;
+  FInputBuffer := nil;
+  FOutputBuffer := nil;
 end;
 
 procedure TBufferedTransportImpl.Flush;
 begin
-  if FOutputBuffer <> nil then
-  begin
+  if FOutputBuffer <> nil then begin
     FOutputBuffer.Flush;
   end;
 end;
 
 function TBufferedTransportImpl.GetIsOpen: Boolean;
 begin
-  Result := FTransport.IsOpen;
-end;
-
-function TBufferedTransportImpl.GetUnderlyingTransport: ITransport;
-begin
-  Result := FTransport;
+  Result := InnerTransport.IsOpen;
 end;
 
 procedure TBufferedTransportImpl.InitBuffers;
 begin
-  if FTransport.InputStream <> nil then
-  begin
-    FInputBuffer := TBufferedStreamImpl.Create( FTransport.InputStream, FBufSize );
+  if InnerTransport.InputStream <> nil then begin
+    FInputBuffer := TBufferedStreamImpl.Create( InnerTransport.InputStream, FBufSize );
   end;
-  if FTransport.OutputStream <> nil then
-  begin
-    FOutputBuffer := TBufferedStreamImpl.Create( FTransport.OutputStream, FBufSize );
+  if InnerTransport.OutputStream <> nil then begin
+    FOutputBuffer := TBufferedStreamImpl.Create( InnerTransport.OutputStream, FBufSize );
   end;
 end;
 
 procedure TBufferedTransportImpl.Open;
 begin
-  FTransport.Open
+  InnerTransport.Open;
+  InitBuffers;  // we need to get the buffers to match FTransport substreams again
 end;
 
-function TBufferedTransportImpl.Read(var buf: TBytes; off, len: Integer): Integer;
+function TBufferedTransportImpl.Read( const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer;
 begin
-  Result := 0;
-  if FInputBuffer <> nil then
-  begin
-    Result := FInputBuffer.Read( buf, off, len );
+  if FInputBuffer <> nil
+  then Result := FInputBuffer.Read( pBuf,buflen, off, len )
+  else Result := 0;
+end;
+
+procedure TBufferedTransportImpl.Write( const pBuf : Pointer; off, len : Integer);
+begin
+  if FOutputBuffer <> nil then begin
+    FOutputBuffer.Write( pBuf, off, len );
   end;
 end;
 
-procedure TBufferedTransportImpl.Write(const buf: TBytes; off, len: Integer);
+procedure TBufferedTransportImpl.CheckReadBytesAvailable( const value : Int64);
+var buffered, need : Int64;
 begin
-  if FOutputBuffer <> nil then
-  begin
-    FOutputBuffer.Write( buf, off, len );
-  end;
+  need := value;
+
+  // buffered bytes
+  buffered := FInputBuffer.Size - FInputBuffer.Position;
+  if buffered < need
+  then InnerTransport.CheckReadBytesAvailable( need - buffered);
 end;
+
+
+{ TBufferedTransportImpl.TFactory }
+
+function TBufferedTransportImpl.TFactory.GetTransport( const aTransport: ITransport): ITransport;
+begin
+  Result := TFramedTransportImpl.Create( aTransport);
+end;
+
 
 { TFramedTransportImpl }
 
-{$IF CompilerVersion < 21.0}
-procedure TFramedTransportImpl_Initialize;
+constructor TFramedTransportImpl.Create( const aTransport: ITransport);
 begin
-  SetLength( TFramedTransportImpl.FHeader_Dummy, TFramedTransportImpl.FHeaderSize);
-  FillChar( TFramedTransportImpl.FHeader_Dummy[0],
-    Length( TFramedTransportImpl.FHeader_Dummy) * SizeOf( Byte ), 0);
-end;
-{$ELSE}
-class constructor TFramedTransportImpl.Create;
-begin
-  SetLength( FHeader_Dummy, FHeaderSize);
-  FillChar( FHeader_Dummy[0], Length( FHeader_Dummy) * SizeOf( Byte ), 0);
-end;
-{$IFEND}
+  ASSERT( aTransport <> nil);
+  inherited Create( aTransport);
 
-constructor TFramedTransportImpl.Create;
-begin
-  inherited Create;
   InitWriteBuffer;
-end;
-
-procedure TFramedTransportImpl.Close;
-begin
-  FTransport.Close;
-end;
-
-constructor TFramedTransportImpl.Create( const ATrans: ITransport);
-begin
-  inherited Create;
-  InitWriteBuffer;
-  FTransport := ATrans;
 end;
 
 destructor TFramedTransportImpl.Destroy;
 begin
   FWriteBuffer.Free;
+  FWriteBuffer := nil;
   FReadBuffer.Free;
+  FReadBuffer := nil;
   inherited;
+end;
+
+procedure TFramedTransportImpl.Close;
+begin
+  InnerTransport.Close;
 end;
 
 procedure TFramedTransportImpl.Flush;
 var
   buf : TBytes;
   len : Integer;
-  data_len : Integer;
-
+  data_len : Int64;
 begin
+  if not IsOpen
+  then raise TTransportExceptionNotOpen.Create('not open');
+
   len := FWriteBuffer.Size;
   SetLength( buf, len);
-  if len > 0 then
-  begin
+  if len > 0 then begin
     System.Move( FWriteBuffer.Memory^, buf[0], len );
   end;
 
-  data_len := len - FHeaderSize;
-  if (data_len < 0) then
-  begin
-    raise Exception.Create( 'TFramedTransport.Flush: data_len < 0' );
-  end;
+  data_len := len - SizeOf(TFramedHeader);
+  if (0 > data_len) or (data_len > Configuration.MaxFrameSize)
+  then raise TTransportExceptionUnknown.Create('TFramedTransport.Flush: invalid frame size ('+IntToStr(data_len)+')')
+  else UpdateKnownMessageSize( len);
 
   InitWriteBuffer;
 
@@ -1084,13 +1370,13 @@ begin
   buf[2] := Byte($FF and (data_len shr 8));
   buf[3] := Byte($FF and data_len);
 
-  FTransport.Write( buf, 0, len );
-  FTransport.Flush;
+  InnerTransport.Write( buf, 0, len );
+  InnerTransport.Flush;
 end;
 
 function TFramedTransportImpl.GetIsOpen: Boolean;
 begin
-  Result := FTransport.IsOpen;
+  Result := InnerTransport.IsOpen;
 end;
 
 type
@@ -1098,72 +1384,103 @@ type
   end;
 
 procedure TFramedTransportImpl.InitWriteBuffer;
+const DUMMY_HEADER : TFramedHeader = 0;
 begin
-  FWriteBuffer.Free;
+  FreeAndNil( FWriteBuffer);
   FWriteBuffer := TMemoryStream.Create;
   TAccessMemoryStream(FWriteBuffer).Capacity := 1024;
-  FWriteBuffer.Write( Pointer(@FHeader_Dummy[0])^, FHeaderSize);
+  FWriteBuffer.Write( DUMMY_HEADER, SizeOf(DUMMY_HEADER));
 end;
 
 procedure TFramedTransportImpl.Open;
 begin
-  FTransport.Open;
+  InnerTransport.Open;
 end;
 
-function TFramedTransportImpl.Read(var buf: TBytes; off, len: Integer): Integer;
-var
-  got : Integer;
+function TFramedTransportImpl.Read( const pBuf : Pointer; const buflen : Integer; off: Integer; len: Integer): Integer;
+var pTmp : PByte;
 begin
-  if FReadBuffer <> nil then
-  begin
-    if len > 0
-    then got := FReadBuffer.Read( Pointer(@buf[off])^, len )
-    else got := 0;
-    if got > 0 then
-    begin
-      Result := got;
-      Exit;
-    end;
+  if len > (buflen-off)
+  then len := buflen-off;
+
+  pTmp := pBuf;
+  Inc( pTmp, off);
+
+  if (FReadBuffer <> nil) and (len > 0) then begin
+    result := FReadBuffer.Read( pTmp^, len);
+    if result > 0 then Exit;
   end;
 
   ReadFrame;
   if len > 0
-  then Result := FReadBuffer.Read( Pointer(@buf[off])^, len)
+  then Result := FReadBuffer.Read( pTmp^, len)
   else Result := 0;
 end;
 
 procedure TFramedTransportImpl.ReadFrame;
 var
-  i32rd : TBytes;
+  i32rd : packed array[0..SizeOf(TFramedHeader)-1] of Byte;
   size : Integer;
   buff : TBytes;
 begin
-  SetLength( i32rd, FHeaderSize );
-  FTransport.ReadAll( i32rd, 0, FHeaderSize);
+  InnerTransport.ReadAll( @i32rd[0], SizeOf(i32rd), 0, SizeOf(i32rd));
   size :=
     ((i32rd[0] and $FF) shl 24) or
     ((i32rd[1] and $FF) shl 16) or
     ((i32rd[2] and $FF) shl 8) or
      (i32rd[3] and $FF);
+
+  if size < 0 then begin
+    Close();
+    raise TTransportExceptionCorruptedData.Create('Read a negative frame size ('+IntToStr(size)+')');
+  end;
+
+  if Int64(size) > Int64(Configuration.MaxFrameSize) then begin
+    Close();
+    raise TTransportExceptionCorruptedData.Create('Frame size ('+IntToStr(size)+') larger than allowed maximum ('+IntToStr(Configuration.MaxFrameSize)+')');
+  end;
+
+  UpdateKnownMessageSize(size + SizeOf(size));
+
   SetLength( buff, size );
-  FTransport.ReadAll( buff, 0, size );
-  FReadBuffer.Free;
+  InnerTransport.ReadAll( buff, 0, size );
+
+  FreeAndNil( FReadBuffer);
   FReadBuffer := TMemoryStream.Create;
-  FReadBuffer.Write( Pointer(@buff[0])^, size );
+  if Length(buff) > 0
+  then FReadBuffer.Write( Pointer(@buff[0])^, size );
   FReadBuffer.Position := 0;
 end;
 
-procedure TFramedTransportImpl.Write(const buf: TBytes; off, len: Integer);
+procedure TFramedTransportImpl.Write( const pBuf : Pointer; off, len : Integer);
+var pTmp : PByte;
 begin
-  if len > 0
-  then FWriteBuffer.Write( Pointer(@buf[off])^, len );
+  if len > 0 then begin
+    pTmp := pBuf;
+    Inc( pTmp, off);
+
+    FWriteBuffer.Write( pTmp^, len );
+  end;
 end;
+
+
+procedure TFramedTransportImpl.CheckReadBytesAvailable( const value : Int64);
+var buffered, need : Int64;
+begin
+  need := value;
+
+  // buffered bytes
+  buffered := FReadBuffer.Size - FReadBuffer.Position;
+  if buffered < need
+  then InnerTransport.CheckReadBytesAvailable( need - buffered);
+end;
+
 
 { TFramedTransport.TFactory }
 
-function TFramedTransportImpl.TFactory.GetTransport( const ATrans: ITransport): ITransport;
+function TFramedTransportImpl.TFactory.GetTransport( const aTransport: ITransport): ITransport;
 begin
-  Result := TFramedTransportImpl.Create( ATrans );
+  Result := TFramedTransportImpl.Create( aTransport);
 end;
 
 { TTcpSocketStreamImpl }
@@ -1173,21 +1490,39 @@ begin
   FTcpClient.Close;
 end;
 
-constructor TTcpSocketStreamImpl.Create( const ATcpClient: TCustomIpClient; const aTimeout : Integer);
+{$IFDEF OLD_SOCKETS}
+constructor TTcpSocketStreamImpl.Create( const aTcpClient: TCustomIpClient; const aTimeout : Integer);
 begin
   inherited Create;
-  FTcpClient := ATcpClient;
+  FTcpClient := aTcpClient;
   FTimeout := aTimeout;
 end;
+{$ELSE}
+constructor TTcpSocketStreamImpl.Create( const aTcpClient: TSocket; const aTimeout : Longword);
+begin
+  inherited Create;
+  FTcpClient := aTcpClient;
+  if aTimeout = 0 then
+    FTcpClient.RecvTimeout := SLEEP_TIME
+  else
+    FTcpClient.RecvTimeout := aTimeout;
+  FTcpClient.SendTimeout := aTimeout;
+end;
+{$ENDIF}
 
 procedure TTcpSocketStreamImpl.Flush;
 begin
-
+  // nothing to do
 end;
+
 
 function TTcpSocketStreamImpl.IsOpen: Boolean;
 begin
+{$IFDEF OLD_SOCKETS}
   Result := FTcpClient.Active;
+{$ELSE}
+  Result := FTcpClient.IsOpen;
+{$ENDIF}
 end;
 
 procedure TTcpSocketStreamImpl.Open;
@@ -1196,6 +1531,7 @@ begin
 end;
 
 
+{$IFDEF OLD_SOCKETS}
 function TTcpSocketStreamImpl.Select( ReadReady, WriteReady, ExceptFlag: PBoolean;
                                       TimeOut: Integer; var wsaError : Integer): Integer;
 var
@@ -1216,50 +1552,55 @@ begin
 
   socket := FTcpClient.Handle;
 
-  if Assigned(ReadReady) then
-  begin
+  if Assigned(ReadReady) then begin
     ReadFdsptr := @ReadFds;
     FD_ZERO(ReadFds);
     FD_SET(socket, ReadFds);
   end
-  else
+  else begin
     ReadFdsptr := nil;
+  end;
 
-  if Assigned(WriteReady) then
-  begin
+  if Assigned(WriteReady) then begin
     WriteFdsptr := @WriteFds;
     FD_ZERO(WriteFds);
     FD_SET(socket, WriteFds);
   end
-  else
+  else begin
     WriteFdsptr := nil;
+  end;
 
-  if Assigned(ExceptFlag) then
-  begin
+  if Assigned(ExceptFlag) then begin
     ExceptFdsptr := @ExceptFds;
     FD_ZERO(ExceptFds);
     FD_SET(socket, ExceptFds);
   end
-  else
+  else begin
     ExceptFdsptr := nil;
+  end;
 
-  if TimeOut >= 0 then
-  begin
+  if TimeOut >= 0 then begin
     tv.tv_sec := TimeOut div 1000;
     tv.tv_usec :=  1000 * (TimeOut mod 1000);
     Timeptr := @tv;
   end
-  else
+  else begin
     Timeptr := nil;  // wait forever
+  end;
 
   wsaError := 0;
   try
-{$IFDEF MSWINDOWS}
-    result := WinSock.select(socket + 1, ReadFdsptr, WriteFdsptr, ExceptFdsptr, Timeptr);
-{$ENDIF}
-{$IFDEF LINUX}
-    result := Libc.select(socket + 1, ReadFdsptr, WriteFdsptr, ExceptFdsptr, Timeptr);
-{$ENDIF}
+    {$IFDEF MSWINDOWS}
+      {$IFDEF OLD_UNIT_NAMES}
+      result := WinSock.select(        socket + 1, ReadFdsptr, WriteFdsptr, ExceptFdsptr, Timeptr);
+      {$ELSE}
+      result := Winapi.WinSock.select( socket + 1, ReadFdsptr, WriteFdsptr, ExceptFdsptr, Timeptr);
+      {$ENDIF}
+    {$ENDIF}
+    {$IFDEF LINUX}
+      result := Libc.select(           socket + 1, ReadFdsptr, WriteFdsptr, ExceptFdsptr, Timeptr);
+    {$ENDIF}
+
     if result = SOCKET_ERROR
     then wsaError := WSAGetLastError;
 
@@ -1268,18 +1609,24 @@ begin
   end;
 
   if Assigned(ReadReady) then
-    ReadReady^ := FD_ISSET(socket, ReadFds);
+   ReadReady^ := FD_ISSET(socket, ReadFds);
+   
   if Assigned(WriteReady) then
     WriteReady^ := FD_ISSET(socket, WriteFds);
+  
   if Assigned(ExceptFlag) then
     ExceptFlag^ := FD_ISSET(socket, ExceptFds);
 end;
+{$ENDIF}
 
+{$IFDEF OLD_SOCKETS}
 function TTcpSocketStreamImpl.WaitForData( TimeOut : Integer; pBuf : Pointer;
                                            DesiredBytes : Integer;
                                            var wsaError, bytesReady : Integer): TWaitForData;
 var bCanRead, bError : Boolean;
     retval : Integer;
+const 
+  MSG_PEEK = {$IFDEF OLD_UNIT_NAMES} WinSock.MSG_PEEK  {$ELSE} Winapi.WinSock.MSG_PEEK  {$ENDIF};
 begin
   bytesReady := 0;
 
@@ -1295,7 +1642,8 @@ begin
 
   // recv() returns the number of bytes received, or -1 if an error occurred.
   // The return value will be 0 when the peer has performed an orderly shutdown.
-  retval := recv( FTcpClient.Handle, pBuf^, DesiredBytes, WinSock.MSG_PEEK);
+  
+  retval := recv( FTcpClient.Handle, pBuf^, DesiredBytes, MSG_PEEK);
   if retval <= 0
   then Exit( TWaitForData.wfd_Error);
 
@@ -1303,72 +1651,83 @@ begin
   bytesReady := Min( retval, DesiredBytes);
   result := TWaitForData.wfd_HaveData;
 end;
+{$ENDIF}
 
-function TTcpSocketStreamImpl.Read(var buffer: TBytes; offset, count: Integer): Integer;
+{$IFDEF OLD_SOCKETS}
+function TTcpSocketStreamImpl.Read( const pBuf : Pointer; const buflen : Integer; offset: Integer; count: Integer): Integer;
+// old sockets version
 var wfd : TWaitForData;
-    wsaError, nBytes : Integer;
-    pDest : PByte;
-const
-  SLEEP_TIME = 200;
+    wsaError,
+    msecs : Integer;
+    nBytes : Integer;
+    pTmp : PByte;
 begin
   inherited;
 
+  if FTimeout > 0
+  then msecs := FTimeout
+  else msecs := DEFAULT_THRIFT_TIMEOUT;
+
   result := 0;
-  pDest := Pointer(@buffer[offset]);
-  while count > 0 do begin
+  pTmp   := pBuf;
+  Inc( pTmp, offset);
+  while (count > 0) and (result = 0) do begin
 
     while TRUE do begin
-      if FTimeout > 0
-      then wfd := WaitForData( FTimeout,   pDest, count, wsaError, nBytes)
-      else wfd := WaitForData( SLEEP_TIME, pDest, count, wsaError, nBytes);
-
+      wfd := WaitForData( msecs, pTmp, count, wsaError, nBytes);
       case wfd of
-        TWaitForData.wfd_Error    :  Exit(0);
+        TWaitForData.wfd_Error    :  Exit;
         TWaitForData.wfd_HaveData :  Break;
         TWaitForData.wfd_Timeout  :  begin
-          if (FTimeout > 0)
-          then raise TTransportException.Create( TTransportException.TExceptionType.TimedOut,
-                                                 SysErrorMessage(Cardinal(wsaError)));
+          if (FTimeout = 0)
+          then Exit
+          else raise TTransportExceptionTimedOut.Create(SysErrorMessage(Cardinal(wsaError)));
         end;
       else
         ASSERT( FALSE);
       end;
     end;
 
+    // reduce the timeout once we got data
+    if FTimeout > 0
+    then msecs := FTimeout div 10
+    else msecs := DEFAULT_THRIFT_TIMEOUT div 10;
+    msecs := Max( msecs, 200);
+
     ASSERT( nBytes <= count);
-    nBytes := FTcpClient.ReceiveBuf( pDest^, nBytes);
-    Inc( pDest, nBytes);
+    nBytes := FTcpClient.ReceiveBuf( pTmp^, nBytes);
+    Inc( pTmp, nBytes);
     Dec( count, nBytes);
     Inc( result, nBytes);
   end;
 end;
 
 function TTcpSocketStreamImpl.ToArray: TBytes;
-var
-  len : Integer;
+// old sockets version
+var len : Integer;
 begin
   len := 0;
-  if IsOpen then
-  begin
+  if IsOpen then begin
     len := FTcpClient.BytesReceived;
   end;
 
   SetLength( Result, len );
 
-  if len > 0 then
-  begin
+  if len > 0 then begin
     FTcpClient.ReceiveBuf( Pointer(@Result[0])^, len);
   end;
 end;
 
-procedure TTcpSocketStreamImpl.Write(const buffer: TBytes; offset, count: Integer);
+procedure TTcpSocketStreamImpl.Write( const pBuf : Pointer; offset, count: Integer);
+// old sockets version
 var bCanWrite, bError : Boolean;
     retval, wsaError : Integer;
+    pTmp : PByte;
 begin
   inherited;
 
   if not FTcpClient.Active
-  then raise TTransportException.Create( TTransportException.TExceptionType.NotOpen);
+  then raise TTransportExceptionNotOpen.Create('not open');
 
   // The select function returns the total number of socket handles that are ready
   // and contained in the fd_set structures, zero if the time limit expired,
@@ -1376,22 +1735,74 @@ begin
   // WSAGetLastError can be used to retrieve a specific error code.
   retval := Self.Select( nil, @bCanWrite, @bError, FTimeOut, wsaError);
   if retval = SOCKET_ERROR
-  then raise TTransportException.Create( TTransportException.TExceptionType.Unknown,
-                                         SysErrorMessage(Cardinal(wsaError)));
+  then raise TTransportExceptionUnknown.Create(SysErrorMessage(Cardinal(wsaError)));
+
   if (retval = 0)
-  then raise TTransportException.Create( TTransportException.TExceptionType.TimedOut);
+  then raise TTransportExceptionTimedOut.Create('timed out');
+
   if bError or not bCanWrite
-  then raise TTransportException.Create( TTransportException.TExceptionType.Unknown);
+  then raise TTransportExceptionUnknown.Create('unknown error');
 
-  FTcpClient.SendBuf( Pointer(@buffer[offset])^, count);
+  pTmp := pBuf;
+  Inc( pTmp, offset);
+  FTcpClient.SendBuf( pTmp^, count);
 end;
 
-{$IF CompilerVersion < 21.0}
-initialization
+{$ELSE}
+
+function TTcpSocketStreamImpl.Read( const pBuf : Pointer; const buflen : Integer; offset: Integer; count: Integer): Integer;
+// new sockets version
+var nBytes : Integer;
+    pTmp : PByte;
 begin
-  TFramedTransportImpl_Initialize;
+  inherited;
+
+  result := 0;
+  pTmp   := pBuf;
+  Inc( pTmp, offset);
+  while count > 0 do begin
+    nBytes := FTcpClient.Read( pTmp^, count);
+    if nBytes = 0 then Exit;
+    Inc( pTmp, nBytes);
+    Dec( count, nBytes);
+    Inc( result, nBytes);
+  end;
 end;
-{$IFEND}
+
+function TTcpSocketStreamImpl.ToArray: TBytes;
+// new sockets version
+var len : Integer;
+begin
+  len := 0;
+  try
+    if FTcpClient.Peek then
+      repeat
+        SetLength(Result, Length(Result) + 1024);
+        len := FTcpClient.Read(Result[Length(Result) - 1024], 1024);
+      until len < 1024;
+  except
+    on TTransportException do begin { don't allow default exceptions } end;
+    else raise;
+  end;
+  if len > 0 then
+    SetLength(Result, Length(Result) - 1024 + len);
+end;
+
+procedure TTcpSocketStreamImpl.Write( const pBuf : Pointer; offset, count: Integer);
+// new sockets version
+var pTmp : PByte;
+begin
+  inherited;
+
+  if not FTcpClient.IsOpen
+  then raise TTransportExceptionNotOpen.Create('not open');
+
+  pTmp := pBuf;
+  Inc( pTmp, offset);
+  FTcpClient.Write( pTmp^, count);
+end;
+
+{$ENDIF}
 
 
 end.

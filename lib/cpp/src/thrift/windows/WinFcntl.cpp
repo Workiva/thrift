@@ -45,8 +45,8 @@ int thrift_fcntl(THRIFT_SOCKET fd, int cmd, int flags) {
 #if WINVER <= 0x0502 // XP, Server2003
 int thrift_poll(THRIFT_POLLFD* fdArray, ULONG nfds, INT timeout) {
   fd_set read_fds, write_fds;
-  fd_set* read_fds_ptr = NULL;
-  fd_set* write_fds_ptr = NULL;
+  fd_set* read_fds_ptr = nullptr;
+  fd_set* write_fds_ptr = nullptr;
 
   FD_ZERO(&read_fds);
   FD_ZERO(&write_fds);
@@ -65,16 +65,17 @@ int thrift_poll(THRIFT_POLLFD* fdArray, ULONG nfds, INT timeout) {
   }
 
   timeval time_out;
-  timeval* time_out_ptr = NULL;
+  timeval* time_out_ptr = nullptr;
   if (timeout >= 0) {
-    timeval time_out = {timeout / 1000, (timeout % 1000) * 1000};
+    time_out.tv_sec = timeout / 1000;
+    time_out.tv_usec = (timeout % 1000) * 1000;
     time_out_ptr = &time_out;
   } else { // to avoid compiler warnings
     (void)time_out;
     (void)timeout;
   }
 
-  int sktready = select(1, read_fds_ptr, write_fds_ptr, NULL, time_out_ptr);
+  int sktready = select(1, read_fds_ptr, write_fds_ptr, nullptr, time_out_ptr);
   if (sktready > 0) {
     for (ULONG i = 0; i < nfds; i++) {
       fdArray[i].revents = 0;

@@ -22,13 +22,20 @@ unit Thrift;
 interface
 
 uses
-  SysUtils, Thrift.Protocol;
+  SysUtils,
+  Thrift.Utils,
+  Thrift.Exception,
+  Thrift.Protocol;
 
 const
-  Version = '1.0.0-dev';
+  Version = '0.14.0';
 
 type
-  TApplicationException = class( SysUtils.Exception )
+  TException = Thrift.Exception.TException; // compatibility alias
+
+  TApplicationExceptionSpecializedClass = class of TApplicationExceptionSpecialized;
+
+  TApplicationException = class( TException, IBase, ISupportsToString)
   public
     type
 {$SCOPEDENUMS ON}
@@ -46,122 +53,242 @@ type
         UnsupportedClientType
       );
 {$SCOPEDENUMS OFF}
-  private
-    FType : TExceptionType;
+  strict private
+    FExceptionType : TExceptionType;
+
+  strict protected
+    function QueryInterface(const IID: TGUID; out Obj): HResult; stdcall;
+    function _AddRef: Integer; stdcall;
+    function _Release: Integer; stdcall;
+
+  strict protected
+    constructor HiddenCreate(const Msg: string);
+    class function GetSpecializedExceptionType(AType: TExceptionType): TApplicationExceptionSpecializedClass;
+
   public
-    constructor Create; overload;
-    constructor Create( AType: TExceptionType); overload;
-    constructor Create( AType: TExceptionType; const msg: string); overload;
+    // purposefully hide inherited constructor
+    class function Create(const Msg: string): TApplicationException; overload; deprecated 'Use specialized TApplicationException types (or regenerate from IDL)';
+    class function Create: TApplicationException; overload; deprecated 'Use specialized TApplicationException types (or regenerate from IDL)';
+    class function Create( AType: TExceptionType): TApplicationException; overload; deprecated 'Use specialized TApplicationException types (or regenerate from IDL)';
+    class function Create( AType: TExceptionType; const msg: string): TApplicationException; overload; deprecated 'Use specialized TApplicationException types (or regenerate from IDL)';
+
+    function Type_: TExceptionType; virtual;
+
+    procedure IBase_Read( const iprot: IProtocol);
+    procedure IBase.Read = IBase_Read;
 
     class function Read( const iprot: IProtocol): TApplicationException;
     procedure Write( const oprot: IProtocol );
   end;
 
-  // base class for IDL-generated exceptions
-  TException = class( SysUtils.Exception)
+  // Needed to remove deprecation warning
+  TApplicationExceptionSpecialized = class abstract (TApplicationException)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  virtual; abstract;
   public
-    function Message : string;        // hide inherited property: allow read, but prevent accidental writes
-    procedure UpdateMessageProperty;  // update inherited message property with toString()
+    constructor Create(const Msg: string);
+    function Type_: TApplicationException.TExceptionType; override;
   end;
+
+  TApplicationExceptionUnknown = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionUnknownMethod = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionInvalidMessageType = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionWrongMethodName = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionBadSequenceID = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionMissingResult = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionInternalError = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionProtocolError = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionInvalidTransform = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionInvalidProtocol = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+  TApplicationExceptionUnsupportedClientType = class (TApplicationExceptionSpecialized)
+  strict protected
+    class function GetType: TApplicationException.TExceptionType;  override;
+  end;
+
+
 
 implementation
 
-{ TException }
-
-function TException.Message;
-// allow read (exception summary), but prevent accidental writes
-// read will return the exception summary
-begin
-  result := Self.ToString;
-end;
-
-procedure TException.UpdateMessageProperty;
-// Update the inherited Message property to better conform to standard behaviour.
-// Nice benefit: The IDE is now able to show the exception message again.
-begin
-  inherited Message := Self.ToString;  // produces a summary text
-end;
-
 { TApplicationException }
 
-constructor TApplicationException.Create;
+constructor TApplicationException.HiddenCreate(const Msg: string);
 begin
-  inherited Create( '' );
+  inherited Create(Msg);
 end;
 
-constructor TApplicationException.Create(AType: TExceptionType;
-  const msg: string);
+class function TApplicationException.Create(const Msg: string): TApplicationException;
 begin
-  inherited Create( msg );
-  FType := AType;
+  Result := TApplicationExceptionUnknown.Create(Msg);
 end;
 
-constructor TApplicationException.Create(AType: TExceptionType);
+class function TApplicationException.Create: TApplicationException;
 begin
-  inherited Create('');
-  FType := AType;
+  Result := TApplicationExceptionUnknown.Create('');
 end;
 
-class function TApplicationException.Read( const iprot: IProtocol): TApplicationException;
+class function TApplicationException.Create( AType: TExceptionType): TApplicationException;
+begin
+{$WARN SYMBOL_DEPRECATED OFF}
+  Result := Create(AType, '');
+{$WARN SYMBOL_DEPRECATED DEFAULT}
+end;
+
+class function TApplicationException.Create( AType: TExceptionType; const msg: string): TApplicationException;
+begin
+  Result := GetSpecializedExceptionType(AType).Create(msg);
+end;
+
+
+function TApplicationException.QueryInterface(const IID: TGUID; out Obj): HResult;
+begin
+  if GetInterface(IID, Obj)
+  then result := S_OK
+  else result := E_NOINTERFACE;
+end;
+
+function TApplicationException._AddRef: Integer;
+begin
+  result := -1;    // not refcounted
+end;
+
+function TApplicationException._Release: Integer;
+begin
+  result := -1;    // not refcounted
+end;
+
+
+function TApplicationException.Type_: TExceptionType;
+begin
+  result := FExceptionType;
+end;
+
+
+class function TApplicationException.GetSpecializedExceptionType(AType: TExceptionType): TApplicationExceptionSpecializedClass;
+begin
+  case AType of
+    TExceptionType.UnknownMethod:         Result := TApplicationExceptionUnknownMethod;
+    TExceptionType.InvalidMessageType:    Result := TApplicationExceptionInvalidMessageType;
+    TExceptionType.WrongMethodName:       Result := TApplicationExceptionWrongMethodName;
+    TExceptionType.BadSequenceID:         Result := TApplicationExceptionBadSequenceID;
+    TExceptionType.MissingResult:         Result := TApplicationExceptionMissingResult;
+    TExceptionType.InternalError:         Result := TApplicationExceptionInternalError;
+    TExceptionType.ProtocolError:         Result := TApplicationExceptionProtocolError;
+    TExceptionType.InvalidTransform:      Result := TApplicationExceptionInvalidTransform;
+    TExceptionType.InvalidProtocol:       Result := TApplicationExceptionInvalidProtocol;
+    TExceptionType.UnsupportedClientType: Result := TApplicationExceptionUnsupportedClientType;
+  else
+    ASSERT( TExceptionType.Unknown = aType);
+    Result := TApplicationExceptionUnknown;
+  end;
+end;
+
+
+procedure TApplicationException.IBase_Read( const iprot: IProtocol);
 var
-  field : IField;
-  msg : string;
-  typ : TExceptionType;
-  struc : IStruct;
+  field : TThriftField;
+  struc : TThriftStruct;
 begin
-  msg := '';
-  typ := TExceptionType.Unknown;
   struc := iprot.ReadStructBegin;
   while ( True ) do
   begin
     field := iprot.ReadFieldBegin;
-    if ( field.Type_ = TType.Stop) then
-    begin
+    if ( field.Type_ = TType.Stop) then begin
       Break;
     end;
 
     case field.Id of
       1 : begin
-        if ( field.Type_ = TType.String_) then
-        begin
-          msg := iprot.ReadString;
-        end else
-        begin
+        if ( field.Type_ = TType.String_) then begin
+          Exception(Self).Message := iprot.ReadString;
+        end else begin
           TProtocolUtil.Skip( iprot, field.Type_ );
         end;
       end;
 
       2 : begin
-        if ( field.Type_ = TType.I32) then
-        begin
-          typ := TExceptionType( iprot.ReadI32 );
-        end else
-        begin
+        if ( field.Type_ = TType.I32) then begin
+          FExceptionType := TExceptionType( iprot.ReadI32 );
+        end else begin
           TProtocolUtil.Skip( iprot, field.Type_ );
         end;
-      end else
-      begin
+      end else begin
         TProtocolUtil.Skip( iprot, field.Type_);
       end;
     end;
     iprot.ReadFieldEnd;
   end;
   iprot.ReadStructEnd;
-  Result := TApplicationException.Create( typ, msg );
+end;
+
+
+class function TApplicationException.Read( const iprot: IProtocol): TApplicationException;
+var instance : TApplicationException;
+    base : IBase;
+begin
+  instance := TApplicationException.CreateFmt('',[]);
+  try
+    if Supports( instance, IBase, base) then try
+      base.Read(iprot);
+    finally
+      base := nil;  // clear ref before free
+    end;
+
+    result := GetSpecializedExceptionType(instance.Type_).Create( Exception(instance).Message);
+  finally
+    instance.Free;
+  end;
 end;
 
 procedure TApplicationException.Write( const oprot: IProtocol);
 var
-  struc : IStruct;
-  field : IField;
-
+  struc : TThriftStruct;
+  field : TThriftField;
 begin
-  struc := TStructImpl.Create( 'TApplicationException' );
-  field := TFieldImpl.Create;
+  Init(struc, 'TApplicationException');
+  Init(field);
 
   oprot.WriteStructBegin( struc );
-  if Message <> '' then
-  begin
+  if Message <> '' then begin
     field.Name := 'message';
     field.Type_ := TType.String_;
     field.Id := 1;
@@ -174,10 +301,81 @@ begin
   field.Type_ := TType.I32;
   field.Id := 2;
   oprot.WriteFieldBegin(field);
-  oprot.WriteI32(Integer(FType));
+  oprot.WriteI32(Integer(Type_));
   oprot.WriteFieldEnd();
   oprot.WriteFieldStop();
   oprot.WriteStructEnd();
 end;
+
+{ TApplicationExceptionSpecialized }
+
+constructor TApplicationExceptionSpecialized.Create(const Msg: string);
+begin
+  inherited HiddenCreate(Msg);
+end;
+
+function TApplicationExceptionSpecialized.Type_: TApplicationException.TExceptionType;
+begin
+  result := GetType;
+end;
+
+
+{ specialized TApplicationExceptions }
+
+class function TApplicationExceptionUnknownMethod.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.UnknownMethod;
+end;
+
+class function TApplicationExceptionInvalidMessageType.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.InvalidMessageType;
+end;
+
+class function TApplicationExceptionWrongMethodName.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.WrongMethodName;
+end;
+
+class function TApplicationExceptionBadSequenceID.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.BadSequenceID;
+end;
+
+class function TApplicationExceptionMissingResult.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.MissingResult;
+end;
+
+class function TApplicationExceptionInternalError.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.InternalError;
+end;
+
+class function TApplicationExceptionProtocolError.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.ProtocolError;
+end;
+
+class function TApplicationExceptionInvalidTransform.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.InvalidTransform;
+end;
+
+class function TApplicationExceptionInvalidProtocol.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.InvalidProtocol;
+end;
+
+class function TApplicationExceptionUnsupportedClientType.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.UnsupportedClientType;
+end;
+
+class function TApplicationExceptionUnknown.GetType : TApplicationException.TExceptionType;
+begin
+  result := TExceptionType.Unknown;
+end;
+
 
 end.

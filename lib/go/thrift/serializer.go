@@ -19,14 +19,19 @@
 
 package thrift
 
+import (
+	"context"
+	"sync"
+)
+
 type TSerializer struct {
 	Transport *TMemoryBuffer
 	Protocol  TProtocol
 }
 
 type TStruct interface {
-	Write(p TProtocol) error
-	Read(p TProtocol) error
+	Write(ctx context.Context, p TProtocol) error
+	Read(ctx context.Context, p TProtocol) error
 }
 
 func NewTSerializer() *TSerializer {
@@ -38,38 +43,71 @@ func NewTSerializer() *TSerializer {
 		protocol}
 }
 
-func (t *TSerializer) WriteString(msg TStruct) (s string, err error) {
+func (t *TSerializer) WriteString(ctx context.Context, msg TStruct) (s string, err error) {
 	t.Transport.Reset()
 
-	if err = msg.Write(t.Protocol); err != nil {
+	if err = msg.Write(ctx, t.Protocol); err != nil {
 		return
 	}
 
-	if err = t.Protocol.Flush(); err != nil {
+	if err = t.Protocol.Flush(ctx); err != nil {
 		return
 	}
-	if err = t.Transport.Flush(); err != nil {
+	if err = t.Transport.Flush(ctx); err != nil {
 		return
 	}
 
 	return t.Transport.String(), nil
 }
 
-func (t *TSerializer) Write(msg TStruct) (b []byte, err error) {
+func (t *TSerializer) Write(ctx context.Context, msg TStruct) (b []byte, err error) {
 	t.Transport.Reset()
 
-	if err = msg.Write(t.Protocol); err != nil {
+	if err = msg.Write(ctx, t.Protocol); err != nil {
 		return
 	}
 
-	if err = t.Protocol.Flush(); err != nil {
+	if err = t.Protocol.Flush(ctx); err != nil {
 		return
 	}
 
-	if err = t.Transport.Flush(); err != nil {
+	if err = t.Transport.Flush(ctx); err != nil {
 		return
 	}
 
 	b = append(b, t.Transport.Bytes()...)
 	return
+}
+
+// TSerializerPool is the thread-safe version of TSerializer, it uses resource
+// pool of TSerializer under the hood.
+//
+// It must be initialized with NewTSerializerPool.
+type TSerializerPool struct {
+	pool sync.Pool
+}
+
+// NewTSerializerPool creates a new TSerializerPool.
+//
+// NewTSerializer can be used as the arg here.
+func NewTSerializerPool(f func() *TSerializer) *TSerializerPool {
+	return &TSerializerPool{
+		pool: sync.Pool{
+			New: func() interface{} {
+				return f()
+			},
+		},
+	}
+}
+
+func (t *TSerializerPool) WriteString(ctx context.Context, msg TStruct) (string, error) {
+	s := t.pool.Get().(*TSerializer)
+	defer t.pool.Put(s)
+	return s.WriteString(ctx, msg)
+}
+
+func (t *TSerializerPool) Write(ctx context.Context, msg TStruct) ([]byte, error) {
+	s := t.pool.Get().(*TSerializer)
+	defer t.pool.Put(s)
+	return s.Write(ctx, msg)
 }

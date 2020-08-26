@@ -20,6 +20,7 @@
 package thrift
 
 import (
+	"net/http"
 	"testing"
 )
 
@@ -34,6 +35,13 @@ func TestHttpClient(t *testing.T) {
 		t.Fatalf("Unable to connect to %s: %s", addr.String(), err)
 	}
 	TransportTest(t, trans, trans)
+
+	t.Run("nilBuffer", func(t *testing.T) {
+		_ = trans.Close()
+		if _, err = trans.Write([]byte{1, 2, 3, 4}); err == nil {
+			t.Fatalf("writing to a closed transport did not result in an error")
+		}
+	})
 }
 
 func TestHttpClientHeaders(t *testing.T) {
@@ -47,4 +55,59 @@ func TestHttpClientHeaders(t *testing.T) {
 		t.Fatalf("Unable to connect to %s: %s", addr.String(), err)
 	}
 	TransportHeaderTest(t, trans, trans)
+}
+
+func TestHttpCustomClient(t *testing.T) {
+	l, addr := HttpClientSetupForTest(t)
+	if l != nil {
+		defer l.Close()
+	}
+
+	httpTransport := &customHttpTransport{}
+
+	trans, err := NewTHttpPostClientWithOptions("http://"+addr.String(), THttpClientOptions{
+		Client: &http.Client{
+			Transport: httpTransport,
+		},
+	})
+	if err != nil {
+		l.Close()
+		t.Fatalf("Unable to connect to %s: %s", addr.String(), err)
+	}
+	TransportHeaderTest(t, trans, trans)
+
+	if !httpTransport.hit {
+		t.Fatalf("Custom client was not used")
+	}
+}
+
+func TestHttpCustomClientPackageScope(t *testing.T) {
+	l, addr := HttpClientSetupForTest(t)
+	if l != nil {
+		defer l.Close()
+	}
+	httpTransport := &customHttpTransport{}
+	DefaultHttpClient = &http.Client{
+		Transport: httpTransport,
+	}
+
+	trans, err := NewTHttpPostClient("http://" + addr.String())
+	if err != nil {
+		l.Close()
+		t.Fatalf("Unable to connect to %s: %s", addr.String(), err)
+	}
+	TransportHeaderTest(t, trans, trans)
+
+	if !httpTransport.hit {
+		t.Fatalf("Custom client was not used")
+	}
+}
+
+type customHttpTransport struct {
+	hit bool
+}
+
+func (c *customHttpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.hit = true
+	return http.DefaultTransport.RoundTrip(req)
 }

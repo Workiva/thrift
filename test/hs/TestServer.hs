@@ -31,7 +31,7 @@ import Network
 import System.Environment
 import System.Exit
 import System.IO
-import System.Posix.Unistd
+import Control.Concurrent (threadDelay)
 import qualified System.IO as IO
 import qualified Data.HashMap.Strict as Map
 import qualified Data.HashSet as Set
@@ -48,6 +48,7 @@ import Thrift.Transport.Framed
 import Thrift.Transport.Handle
 import Thrift.Protocol.Binary
 import Thrift.Protocol.Compact
+import Thrift.Protocol.Header
 import Thrift.Protocol.JSON
 
 data Options = Options
@@ -90,11 +91,13 @@ getTransport t = NoTransport $ "Unsupported transport: " ++ t
 data ProtocolType = Binary
                   | Compact
                   | JSON
+                  | Header
 
 getProtocol :: String -> ProtocolType
 getProtocol "binary"  = Binary
 getProtocol "compact" = Compact
 getProtocol "json"    = JSON
+getProtocol "header"  = Header
 getProtocol p = error $"Unsupported Protocol: " ++ p
 
 defaultOptions :: Options
@@ -209,10 +212,10 @@ instance ThriftTest_Iface TestHandler where
 
   testInsanity _ x = do
     System.IO.putStrLn "testInsanity()"
-    return $ Map.fromList [ (1, Map.fromList [ (TWO  , x)
-                                             , (THREE, x)
+    return $ Map.fromList [ (1, Map.fromList [ (Numberz_TWO  , x)
+                                             , (Numberz_THREE, x)
                                              ])
-                          , (2, Map.fromList [ (SIX, default_Insanity)
+                          , (2, Map.fromList [ (Numberz_SIX, default_Insanity)
                                              ])
                           ]
 
@@ -241,7 +244,7 @@ instance ThriftTest_Iface TestHandler where
 
   testOneway _ i = do
     System.IO.putStrLn $ "testOneway(" ++ show i ++ "): Sleeping..."
-    sleep (fromIntegral i)
+    threadDelay $ (fromIntegral i) * 1000000
     System.IO.putStrLn $ "testOneway(" ++ show i ++ "): done sleeping!"
 
 main :: IO ()
@@ -261,13 +264,19 @@ main = do
           t <- f socket
           return (p t, p t)
 
+        headerAcceptor f socket = do
+          t <- f socket
+          p <- createHeaderProtocol1 t
+          return (p, p)
+
         doRunServer p f = do
           runThreadedServer (acceptor p f) TestHandler ThriftTest.process . PortNumber . fromIntegral
 
         runServer p f port = case p of
-          Binary  -> do doRunServer BinaryProtocol f port
-          Compact -> do doRunServer CompactProtocol f port
-          JSON    -> do doRunServer JSONProtocol f port
+          Binary  -> doRunServer BinaryProtocol f port
+          Compact -> doRunServer CompactProtocol f port
+          JSON    -> doRunServer JSONProtocol f port
+          Header  -> runThreadedServer (headerAcceptor f) TestHandler ThriftTest.process (PortNumber $ fromIntegral port)
 
 parseFlags :: [String] -> Options -> Maybe Options
 parseFlags (flag : flags) opts = do

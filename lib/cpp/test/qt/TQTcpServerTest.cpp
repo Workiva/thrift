@@ -1,84 +1,108 @@
 #define BOOST_TEST_MODULE TQTcpServerTest
 #include <QTest>
-#include <boost/smart_ptr.hpp>
 #include <iostream>
 
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QHostAddress>
+#include <QThread>
 
-#include "thrift/protocol/TBinaryProtocol.h"
-#include "thrift/async/TAsyncProcessor.h"
-#include "thrift/qt/TQTcpServer.h"
-#include "thrift/qt/TQIODeviceTransport.h"
+#ifndef Q_MOC_RUN
+  #include "thrift/protocol/TBinaryProtocol.h"
+  #include "thrift/async/TAsyncProcessor.h"
+  #include "thrift/qt/TQTcpServer.h"
+  #include "thrift/qt/TQIODeviceTransport.h"
 
-#include "gen-cpp/ParentService.h"
+  #include "gen-cpp/ParentService.h"
+#endif
 
 using namespace apache::thrift;
 
 struct AsyncHandler : public test::ParentServiceCobSvIf {
   std::vector<std::string> strings;
-  virtual void addString(tcxx::function<void()> cob, const std::string& s) {
+  void addString(std::function<void()> cob, const std::string& s) override {
     strings.push_back(s);
     cob();
   }
-  virtual void getStrings(tcxx::function<void(std::vector<std::string> const& _return)> cob) {
+  void getStrings(std::function<void(std::vector<std::string> const& _return)> cob) override {
     cob(strings);
   }
 
   // Overrides not used in this test
-  virtual void incrementGeneration(tcxx::function<void(int32_t const& _return)> cob) {}
-  virtual void getGeneration(tcxx::function<void(int32_t const& _return)> cob) {}
-  virtual void getDataWait(tcxx::function<void(std::string const& _return)> cob,
-                           const int32_t length) {}
-  virtual void onewayWait(tcxx::function<void()> cob) {}
-  virtual void exceptionWait(
-      tcxx::function<void()> cob,
-      tcxx::function<void(::apache::thrift::TDelayedException* _throw)> /* exn_cob */,
-      const std::string& message) {}
-  virtual void unexpectedExceptionWait(tcxx::function<void()> cob, const std::string& message) {}
+  void incrementGeneration(std::function<void(int32_t const& _return)> cob) override {}
+  void getGeneration(std::function<void(int32_t const& _return)> cob) override {}
+  void getDataWait(std::function<void(std::string const& _return)> cob,
+                           const int32_t length) override {}
+  void onewayWait(std::function<void()> cob) override {}
+  void exceptionWait(
+      std::function<void()> cob,
+      std::function<void(::apache::thrift::TDelayedException* _throw)> /* exn_cob */,
+      const std::string& message) override {}
+  void unexpectedExceptionWait(std::function<void()> cob, const std::string& message) override {}
 };
 
 class TQTcpServerTest : public QObject {
-  void init() {
-    // setup server
-    serverSocket.reset(new QTcpServer);
-    server.reset(new async::TQTcpServer(serverSocket,
-                                        boost::make_shared<test::ParentServiceAsyncProcessor>(
-                                            boost::make_shared<AsyncHandler>()),
-                                        boost::make_shared<protocol::TBinaryProtocolFactory>()));
-    QVERIFY(serverSocket->listen(QHostAddress::LocalHost));
-    int port = serverSocket->serverPort();
-    QVERIFY(port > 0);
+  Q_OBJECT
 
-    // setup client
-    socket.reset(new QTcpSocket);
-    client.reset(new test::ParentServiceClient(boost::make_shared<protocol::TBinaryProtocol>(
-        boost::make_shared<transport::TQIODeviceTransport>(socket))));
-    socket->connectToHost(QHostAddress::LocalHost, port);
-    QVERIFY(socket->waitForConnected());
-  }
+private slots:
+  void initTestCase();
+  void cleanupTestCase();
+  void test_communicate();
 
-  void cleanup() {
-    socket->close();
-    serverSocket->close();
-  }
-
-  void test_communicate() {
-    client->addString("foo");
-    client->addString("bar");
-
-    std::vector<std::string> reply;
-    client->getStrings(reply);
-    QCOMPARE(reply[0], "foo");
-    QCOMPARE(reply[1], "foo");
-  }
-
-  boost::shared_ptr<QTcpServer> serverSocket;
-  boost::shared_ptr<async::TQTcpServer> server;
-  boost::shared_ptr<QTcpSocket> socket;
-  boost::shared_ptr<test::ParentServiceClient> client;
+private:
+  std::shared_ptr<QThread> serverThread;
+  std::shared_ptr<async::TQTcpServer> server;
+  std::shared_ptr<test::ParentServiceClient> client;
 };
+
+void TQTcpServerTest::initTestCase() {
+  // setup server
+  std::shared_ptr<QTcpServer> serverSocket = std::make_shared<QTcpServer>();
+  server.reset(new async::TQTcpServer(serverSocket,
+                                      std::make_shared<test::ParentServiceAsyncProcessor>(
+                                      std::make_shared<AsyncHandler>()),
+                                      std::make_shared<protocol::TBinaryProtocolFactory>()));
+  QVERIFY(serverSocket->listen(QHostAddress::LocalHost));
+  int port = serverSocket->serverPort();
+  QVERIFY(port > 0);
+
+  //setup server thread and move server to it
+  serverThread.reset(new QThread());
+  serverSocket->moveToThread(serverThread.get());
+  server->moveToThread(serverThread.get());
+  serverThread->start();
+
+  // setup client
+  std::shared_ptr<QTcpSocket> socket = std::make_shared<QTcpSocket>();
+  client.reset(new test::ParentServiceClient(std::make_shared<protocol::TBinaryProtocol>(
+      std::make_shared<transport::TQIODeviceTransport>(socket))));
+  socket->connectToHost(QHostAddress::LocalHost, port);
+  QVERIFY(socket->waitForConnected());
+}
+
+void TQTcpServerTest::cleanupTestCase() {
+  //first, stop the thread which holds the server
+  serverThread->quit();
+  serverThread->wait();
+  // now, it is safe to delete the server
+  server.reset();
+  // delete thread now
+  serverThread.reset();
+
+  // cleanup client
+  client.reset();
+}
+
+void TQTcpServerTest::test_communicate() {
+  client->addString("foo");
+  client->addString("bar");
+
+  std::vector<std::string> reply;
+  client->getStrings(reply);
+  QCOMPARE(QString::fromStdString(reply[0]), QString("foo"));
+  QCOMPARE(QString::fromStdString(reply[1]), QString("bar"));
+}
+
 
 #if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
 QTEST_GUILESS_MAIN(TQTcpServerTest);
